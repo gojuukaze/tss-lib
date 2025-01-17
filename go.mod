@@ -6,7 +6,7 @@ require (
 	github.com/agl/ed25519 v0.0.0-20200225211852-fd4d107ace12
 	github.com/btcsuite/btcd v0.24.2
 	github.com/btcsuite/btcd/btcec/v2 v2.3.4
-	github.com/btcsuite/btcd/btcutil v1.1.6
+	github.com/btcsuite/btcutil v0.0.0-20190425235716-9e5f4b9a998d
 	github.com/decred/dcrd/dcrec/edwards/v2 v2.0.3
 	github.com/hashicorp/go-multierror v1.1.1
 	github.com/ipfs/go-log v1.0.5
