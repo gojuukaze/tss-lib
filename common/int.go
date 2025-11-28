@@ -14,9 +14,10 @@ import (
 type modInt big.Int
 
 var (
-	zero = big.NewInt(0)
-	one  = big.NewInt(1)
-	two  = big.NewInt(2)
+	zero  = big.NewInt(0)
+	one   = big.NewInt(1)
+	two   = big.NewInt(2)
+	three = big.NewInt(3)
 )
 
 func ModInt(mod *big.Int) *modInt {

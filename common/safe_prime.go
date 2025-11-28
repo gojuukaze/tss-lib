@@ -294,14 +294,14 @@ func runGenPrimeRoutine(
 					// p = 2q + 1 = 2(3q' + 1) + 1 = 6q' + 2 + 1 = 6q' + 3 =
 					//   = 3(2q' + 1)
 					// So `p` is a multiple of `3`.
-					qMod3 := new(big.Int).Mod(q, big.NewInt(3))
-					if qMod3.Cmp(big.NewInt(1)) == 0 {
+					qMod3 := new(big.Int).Mod(q, three)
+					if qMod3.Cmp(one) == 0 {
 						continue NextDelta
 					}
 
 					// p = 2q+1
-					p.Mul(q, big.NewInt(2))
-					p.Add(p, big.NewInt(1))
+					p.Mul(q, two)
+					p.Add(p, one)
 					if !isPrimeCandidate(p) {
 						continue NextDelta
 					}
