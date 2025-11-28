@@ -227,102 +227,106 @@ func runGenPrimeRoutine(
 		defer waitGroup.Done()
 
 		for {
-			select {
-			case <-ctx.Done():
+			if ctx.Err() != nil {
 				return
-			default:
-				_, err := io.ReadFull(rand, bytes)
-				if err != nil {
-					errCh <- err
-					return
-				}
+			}
 
-				// Clear bits in the first byte to make sure the candidate has
-				// a size <= bits.
-				bytes[0] &= uint8(int(1<<b) - 1)
-				// Don't let the value be too small, i.e, set the most
-				// significant two bits.
-				// Setting the top two bits, rather than just the top bit,
-				// means that when two of these values are multiplied together,
-				// the result isn't ever one bit short.
-				if b >= 2 {
-					bytes[0] |= 3 << (b - 2)
-				} else {
-					// Here b==1, because b cannot be zero.
-					bytes[0] |= 1
-					if len(bytes) > 1 {
-						bytes[1] |= 0x80
-					}
-				}
-				// Make the value odd since an even number this large certainly
-				// isn't prime.
-				bytes[len(bytes)-1] |= 1
+			_, err := io.ReadFull(rand, bytes)
+			if err != nil {
+				errCh <- err
+				return
+			}
 
-				q.SetBytes(bytes)
-
-				// Calculate the value mod the product of smallPrimes. If it's
-				// a multiple of any of these primes we add two until it isn't.
-				// The probability of overflowing is minimal and can be ignored
-				// because we still perform Miller-Rabin tests on the result.
-				bigMod.Mod(q, smallPrimesProduct)
-				mod := bigMod.Uint64()
-
-			NextDelta:
-				for delta := uint64(0); delta < 1<<20; delta += 2 {
-					m := mod + delta
-					for _, prime := range smallPrimes {
-						if m%uint64(prime) == 0 && (qBitLen > 6 || m != uint64(prime)) {
-							continue NextDelta
-						}
-					}
-
-					if delta > 0 {
-						bigMod.SetUint64(delta)
-						q.Add(q, bigMod)
-					}
-
-					// If `q = 1 (mod 3)`, then `p` is a multiple of `3` so it's
-					// obviously no prime and such `q` should be rejected.
-					// This will happen in 50% of cases and we should detect
-					// and eliminate them early.
-					//
-					// Explanation:
-					// If q = 1 (mod 3) then there exists a q' such that:
-					// q = 3q' + 1
-					//
-					// Since p = 2q + 1:
-					// p = 2q + 1 = 2(3q' + 1) + 1 = 6q' + 2 + 1 = 6q' + 3 =
-					//   = 3(2q' + 1)
-					// So `p` is a multiple of `3`.
-					qMod3 := new(big.Int).Mod(q, three)
-					if qMod3.Cmp(one) == 0 {
-						continue NextDelta
-					}
-
-					// p = 2q+1
-					p.Mul(q, two)
-					p.Add(p, one)
-					if !isPrimeCandidate(p) {
-						continue NextDelta
-					}
-
-					break
-				}
-
-				// There is a tiny possibility that, by adding delta, we caused
-				// the number to be one bit too long. Thus we check BitLen
-				// here.
-				if q.ProbablyPrime(20) &&
-					isPocklingtonCriterionSatisfied(p) &&
-					q.BitLen() == qBitLen {
-
-					if sgp := (&GermainSafePrime{p: p, q: q}); sgp.Validate() {
-						primeCh <- &GermainSafePrime{p: p, q: q}
-					}
-					p, q = new(big.Int), new(big.Int)
+			// Clear bits in the first byte to make sure the candidate has
+			// a size <= bits.
+			bytes[0] &= uint8(int(1<<b) - 1)
+			// Don't let the value be too small, i.e, set the most
+			// significant two bits.
+			// Setting the top two bits, rather than just the top bit,
+			// means that when two of these values are multiplied together,
+			// the result isn't ever one bit short.
+			if b >= 2 {
+				bytes[0] |= 3 << (b - 2)
+			} else {
+				// Here b==1, because b cannot be zero.
+				bytes[0] |= 1
+				if len(bytes) > 1 {
+					bytes[1] |= 0x80
 				}
 			}
+			// Make the value odd since an even number this large certainly
+			// isn't prime.
+			bytes[len(bytes)-1] |= 1
+
+			q.SetBytes(bytes)
+
+			// Calculate the value mod the product of smallPrimes. If it's
+			// a multiple of any of these primes we add two until it isn't.
+			// The probability of overflowing is minimal and can be ignored
+			// because we still perform Miller-Rabin tests on the result.
+			bigMod.Mod(q, smallPrimesProduct)
+			mod := bigMod.Uint64()
+
+		NextDelta:
+			for delta := uint64(0); delta < 1<<20; delta += 2 {
+				// 判断一下，防止其他协程已经完成后，当前协程还在运行，占用资源
+				if ctx.Err() != nil {
+					return
+				}
+				m := mod + delta
+				for _, prime := range smallPrimes {
+					if m%uint64(prime) == 0 && (qBitLen > 6 || m != uint64(prime)) {
+						continue NextDelta
+					}
+				}
+
+				if delta > 0 {
+					bigMod.SetUint64(delta)
+					q.Add(q, bigMod)
+				}
+
+				// If `q = 1 (mod 3)`, then `p` is a multiple of `3` so it's
+				// obviously no prime and such `q` should be rejected.
+				// This will happen in 50% of cases and we should detect
+				// and eliminate them early.
+				//
+				// Explanation:
+				// If q = 1 (mod 3) then there exists a q' such that:
+				// q = 3q' + 1
+				//
+				// Since p = 2q + 1:
+				// p = 2q + 1 = 2(3q' + 1) + 1 = 6q' + 2 + 1 = 6q' + 3 =
+				//   = 3(2q' + 1)
+				// So `p` is a multiple of `3`.
+				qMod3 := new(big.Int).Mod(q, three)
+				if qMod3.Cmp(one) == 0 {
+					continue NextDelta
+				}
+
+				// p = 2q+1
+				p.Mul(q, two)
+				p.Add(p, one)
+				if !isPrimeCandidate(p) {
+					continue NextDelta
+				}
+
+				break
+			}
+
+			// There is a tiny possibility that, by adding delta, we caused
+			// the number to be one bit too long. Thus we check BitLen
+			// here.
+			if q.ProbablyPrime(20) &&
+				isPocklingtonCriterionSatisfied(p) &&
+				q.BitLen() == qBitLen {
+
+				if sgp := (&GermainSafePrime{p: p, q: q}); sgp.Validate() {
+					primeCh <- &GermainSafePrime{p: p, q: q}
+				}
+				p, q = new(big.Int), new(big.Int)
+			}
 		}
+
 	}()
 }
 
