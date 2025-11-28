@@ -22,3 +22,8 @@ vendor
 *.swp
 .vscode/*.json
 
+main.go
+keyData
+eddsaKeyData
+dkg
+util
