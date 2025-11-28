@@ -61,7 +61,7 @@ func GeneratePreParamsWithContextAndRandom(ctx context.Context, rand io.Reader, 
 		}
 		concurrency = optionalConcurrency[0]
 	} else {
-		concurrency = runtime.NumCPU()
+		concurrency = runtime.GOMAXPROCS(0)
 	}
 	if concurrency /= 3; concurrency < 1 {
 		concurrency = 1
