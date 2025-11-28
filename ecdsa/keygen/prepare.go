@@ -9,7 +9,6 @@ package keygen
 import (
 	"context"
 	"crypto/rand"
-	"errors"
 	"io"
 	"math/big"
 	"runtime"
@@ -17,6 +16,8 @@ import (
 
 	"github.com/bnb-chain/tss-lib/v2/common"
 	"github.com/bnb-chain/tss-lib/v2/crypto/paillier"
+	"github.com/pkg/errors"
+	"golang.org/x/sync/errgroup"
 )
 
 const (
@@ -40,7 +41,7 @@ func GeneratePreParams(timeout time.Duration, optionalConcurrency ...int) (*Loca
 	return GeneratePreParamsWithContext(ctx, optionalConcurrency...)
 }
 
-// GeneratePreParams finds two safe primes and computes the Paillier secret required for the protocol.
+// GeneratePreParamsWithContext finds two safe primes and computes the Paillier secret required for the protocol.
 // This can be a time consuming process so it is recommended to do it out-of-band.
 // If not specified, a concurrency value equal to the number of available CPU cores will be used.
 // If pre-parameters could not be generated before the context is done, an error is returned.
@@ -48,7 +49,7 @@ func GeneratePreParamsWithContext(ctx context.Context, optionalConcurrency ...in
 	return GeneratePreParamsWithContextAndRandom(ctx, rand.Reader, optionalConcurrency...)
 }
 
-// GeneratePreParams finds two safe primes and computes the Paillier secret required for the protocol.
+// GeneratePreParamsWithContextAndRandom finds two safe primes and computes the Paillier secret required for the protocol.
 // This can be a time consuming process so it is recommended to do it out-of-band.
 // If not specified, a concurrency value equal to the number of available CPU cores will be used.
 // If pre-parameters could not be generated before the context is done, an error is returned.
@@ -66,69 +67,49 @@ func GeneratePreParamsWithContextAndRandom(ctx context.Context, rand io.Reader, 
 		concurrency = 1
 	}
 
-	// prepare for concurrent Paillier and safe prime generation
-	paiCh := make(chan *paillier.PrivateKey, 1)
-	sgpCh := make(chan []*common.GermainSafePrime, 1)
-
+	g := &errgroup.Group{}
 	// 4. generate Paillier public key E_i, private key and proof
-	go func(ch chan<- *paillier.PrivateKey) {
+	var paiSK *paillier.PrivateKey
+
+	g.Go(func() error {
+		var err error
 		common.Logger.Info("generating the Paillier modulus, please wait...")
 		start := time.Now()
 		// more concurrency weight is assigned here because the paillier primes have a requirement of having "large" P-Q
-		PiPaillierSk, _, err := paillier.GenerateKeyPair(ctx, rand, paillierModulusLen, concurrency*2)
+		paiSK, _, err = paillier.GenerateKeyPair(ctx, rand, paillierModulusLen, concurrency*2)
 		if err != nil {
-			ch <- nil
-			return
+			return errors.Wrap(err, "GenerateKeyPair")
 		}
 		common.Logger.Infof("paillier modulus generated. took %s\n", time.Since(start))
-		ch <- PiPaillierSk
-	}(paiCh)
+		if paiSK == nil {
+			return errors.New("timeout or error while generating the Paillier secret key")
+		}
+		return nil
+	})
 
 	// 5-7. generate safe primes for ZKPs used later on
-	go func(ch chan<- []*common.GermainSafePrime) {
+	var sgps []*common.GermainSafePrime
+	g.Go(func() error {
 		var err error
 		common.Logger.Info("generating the safe primes for the signing proofs, please wait...")
 		start := time.Now()
-		sgps, err := common.GetRandomSafePrimesConcurrent(ctx, safePrimeBitLen, 2, concurrency, rand)
+		sgps, err = common.GetRandomSafePrimesConcurrent(ctx, safePrimeBitLen, 2, concurrency, rand)
 		if err != nil {
-			ch <- nil
-			return
+			return errors.Wrap(err, "GetRandomSafePrimesConcurrent")
 		}
 		common.Logger.Infof("safe primes generated. took %s\n", time.Since(start))
-		ch <- sgps
-	}(sgpCh)
-
-	// this ticker will print a log statement while the generating is still in progress
-	logProgressTicker := time.NewTicker(logProgressTickInterval)
-
-	// errors can be thrown in the following code; consume chans to end goroutines here
-	var sgps []*common.GermainSafePrime
-	var paiSK *paillier.PrivateKey
-consumer:
-	for {
-		select {
-		case <-logProgressTicker.C:
-			common.Logger.Info("still generating primes...")
-		case sgps = <-sgpCh:
-			if sgps == nil ||
-				sgps[0] == nil || sgps[1] == nil ||
-				!sgps[0].Prime().ProbablyPrime(30) || !sgps[1].Prime().ProbablyPrime(30) ||
-				!sgps[0].SafePrime().ProbablyPrime(30) || !sgps[1].SafePrime().ProbablyPrime(30) {
-				return nil, errors.New("timeout or error while generating the safe primes")
-			}
-			if paiSK != nil {
-				break consumer
-			}
-		case paiSK = <-paiCh:
-			if paiSK == nil {
-				return nil, errors.New("timeout or error while generating the Paillier secret key")
-			}
-			if sgps != nil {
-				break consumer
-			}
+		if sgps == nil ||
+			sgps[0] == nil || sgps[1] == nil ||
+			!sgps[0].Prime().ProbablyPrime(30) || !sgps[1].Prime().ProbablyPrime(30) ||
+			!sgps[0].SafePrime().ProbablyPrime(30) || !sgps[1].SafePrime().ProbablyPrime(30) {
+			return errors.New("timeout or error while generating the safe primes")
 		}
+		return nil
+	})
+	err := g.Wait()
+	if err != nil {
+		return nil, err
 	}
-	logProgressTicker.Stop()
 
 	P, Q := sgps[0].SafePrime(), sgps[1].SafePrime()
 	NTildei := new(big.Int).Mul(P, Q)
