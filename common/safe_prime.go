@@ -312,7 +312,9 @@ func runGenPrimeRoutine(
 
 				break
 			}
-
+			if ctx.Err() != nil {
+				return
+			}
 			// There is a tiny possibility that, by adding delta, we caused
 			// the number to be one bit too long. Thus we check BitLen
 			// here.
