@@ -8,6 +8,7 @@ package common_test
 
 import (
 	"crypto/rand"
+	"fmt"
 	"math/big"
 	"testing"
 
@@ -45,4 +46,25 @@ func TestGetRandomPrimeInt(t *testing.T) {
 	prime := common.GetRandomPrimeInt(rand.Reader, randomIntBitLen)
 	assert.NotZero(t, prime, "rand prime should not be zero")
 	assert.True(t, prime.ProbablyPrime(50), "rand prime should be prime")
+}
+
+func TestMustGetRandomInt2(t *testing.T) {
+	// 测试 big.Int 位移运算和 Exp 运算结果是否一致
+	var (
+		one = big.NewInt(1)
+		two = big.NewInt(2)
+	)
+	for i := 1; i <= 5000; i++ {
+
+		max := new(big.Int)
+		max = max.Exp(two, big.NewInt(int64(i)), nil).Sub(max, one)
+
+		max2 := new(big.Int).Lsh(one, uint(i))
+		max2.Sub(max2, one)
+		if max.Cmp(max2) != 0 {
+			fmt.Println(i, max, max2)
+			panic("mismatch")
+		}
+
+	}
 }
