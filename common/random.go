@@ -108,10 +108,23 @@ func GetRandomGeneratorOfTheQuadraticResidue(rand io.Reader, n *big.Int) *big.In
 
 // GetRandomQuadraticNonResidue returns a quadratic non residue of odd n.
 func GetRandomQuadraticNonResidue(rand io.Reader, n *big.Int) *big.Int {
+	// for {
+	// 	w := GetRandomPositiveInt(rand, n)
+	// 	if big.Jacobi(w, n) == -1 {
+	// 		return w
+	// 	}
+	// }
+	// 这里只需要随机生成小于n的数，就不用GetRandomPositiveInt了
 	for {
-		w := GetRandomPositiveInt(rand, n)
-		if big.Jacobi(w, n) == -1 {
-			return w
+
+		// 生成 [2, n-1] 范围内的随机数
+		a, err := cryptorand.Int(rand, new(big.Int).Sub(n, two))
+		if err != nil {
+			panic(err)
+		}
+		a.Add(a, two)
+		if big.Jacobi(a, n) == -1 {
+			return a
 		}
 	}
 }
