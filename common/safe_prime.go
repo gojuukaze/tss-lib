@@ -13,7 +13,6 @@ import (
 	"io"
 	"math/big"
 	"sync"
-	"sync/atomic"
 )
 
 const (
@@ -140,13 +139,14 @@ func GetRandomSafePrimesConcurrent(ctx context.Context, bitLen, numPrimes int, c
 
 	defer close(primeCh)
 	defer close(errCh)
-	defer waitGroup.Wait()
+	// 不需要等待协程结束，有结果后立即返回。未结束的协程会被context取消
+	// defer waitGroup.Wait()
 
 	generatorCtx, cancelGeneratorCtx := context.WithCancel(ctx)
 	defer cancelGeneratorCtx()
 
 	for i := 0; i < concurrency; i++ {
-		waitGroup.Add(1)
+		// waitGroup.Add(1)
 		runGenPrimeRoutine(
 			generatorCtx, primeCh, errCh, waitGroup, rand, bitLen,
 		)
@@ -157,7 +157,12 @@ func GetRandomSafePrimesConcurrent(ctx context.Context, bitLen, numPrimes int, c
 		select {
 		case result := <-primeCh:
 			primes = append(primes, result)
-			if atomic.AddInt32(&needed, -1) <= 0 {
+			// if atomic.AddInt32(&needed, -1) <= 0 {
+			// 	return primes[:numPrimes], nil
+			// }
+			// 这里不会有并发，不需要atomic
+			needed--
+			if needed <= 0 {
 				return primes[:numPrimes], nil
 			}
 		case err := <-errCh:
@@ -224,7 +229,7 @@ func runGenPrimeRoutine(
 	bigMod := new(big.Int)
 
 	go func() {
-		defer waitGroup.Done()
+		// defer waitGroup.Done()
 
 		for {
 			if ctx.Err() != nil {
@@ -284,7 +289,9 @@ func runGenPrimeRoutine(
 					bigMod.SetUint64(delta)
 					q.Add(q, bigMod)
 				}
-
+				if ctx.Err() != nil {
+					return
+				}
 				// If `q = 1 (mod 3)`, then `p` is a multiple of `3` so it's
 				// obviously no prime and such `q` should be rejected.
 				// This will happen in 50% of cases and we should detect
