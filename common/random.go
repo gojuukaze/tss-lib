@@ -43,12 +43,21 @@ func GetRandomPositiveInt(rand io.Reader, lessThan *big.Int) *big.Int {
 	if lessThan == nil || zero.Cmp(lessThan) != -1 {
 		return nil
 	}
-	var try *big.Int
-	for {
-		try = MustGetRandomInt(rand, lessThan.BitLen())
-		if try.Cmp(lessThan) < 0 {
-			break
-		}
+	if mustGetRandomIntMaxBits < lessThan.BitLen() {
+		panic(fmt.Errorf("MustGetRandomInt: bits should be positive, non-zero and less than %d", mustGetRandomIntMaxBits))
+	}
+	// var try *big.Int
+	// for {
+	// 	try = MustGetRandomInt(rand, lessThan.BitLen())
+	// 	if try.Cmp(lessThan) < 0 {
+	// 		break
+	// 	}
+	// }
+	// return try
+	// 直接用rand.Int生成小于lessThan的随机数
+	try, err := cryptorand.Int(rand, lessThan)
+	if err != nil {
+		panic(errors.Wrap(err, "rand.Int failure in GetRandomPositiveInt!"))
 	}
 	return try
 }
