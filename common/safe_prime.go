@@ -136,9 +136,9 @@ func GetRandomSafePrimesConcurrent(ctx context.Context, bitLen, numPrimes int, c
 	primes := make([]*GermainSafePrime, 0, numPrimes)
 
 	waitGroup := &sync.WaitGroup{}
-
-	defer close(primeCh)
-	defer close(errCh)
+	// 不能关闭channel，把waitGroup.Wait()去掉后，可能可能还有未结束的协程写数据
+	// defer close(primeCh)
+	// defer close(errCh)
 	// 不需要等待协程结束，有结果后立即返回。未结束的协程会被context取消
 	// defer waitGroup.Wait()
 
