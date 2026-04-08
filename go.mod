@@ -1,8 +1,9 @@
-module github.com/bnb-chain/tss-lib/v2
+module github.com/bnb-chain/tss-lib/v3
 
 go 1.25.3
 
 require (
+	filippo.io/bigmod v0.1.0
 	github.com/agl/ed25519 v0.0.0-20200225211852-fd4d107ace12
 	github.com/btcsuite/btcd v0.25.0
 	github.com/btcsuite/btcd/btcec/v2 v2.3.6
@@ -13,9 +14,9 @@ require (
 	github.com/otiai10/primes v0.4.0
 	github.com/pkg/errors v0.9.1
 	github.com/stretchr/testify v1.11.1
-	golang.org/x/crypto v0.45.0
-	golang.org/x/sync v0.0.0-20210220032951-036812b2e83c
-	google.golang.org/protobuf v1.36.10
+	golang.org/x/crypto v0.49.0
+	golang.org/x/sync v0.20.0
+	google.golang.org/protobuf v1.36.11
 )
 
 require (
@@ -31,7 +32,7 @@ require (
 	github.com/pmezard/go-difflib v1.0.0 // indirect
 	go.uber.org/multierr v1.11.0 // indirect
 	go.uber.org/zap v1.27.0 // indirect
-	golang.org/x/sys v0.38.0 // indirect
+	golang.org/x/sys v0.42.0 // indirect
 	gopkg.in/yaml.v3 v3.0.1 // indirect
 )
 

@@ -12,13 +12,13 @@ import (
 	"math/big"
 	"testing"
 
-	"github.com/bnb-chain/tss-lib/v2/common"
-	"github.com/bnb-chain/tss-lib/v2/crypto"
-	"github.com/bnb-chain/tss-lib/v2/crypto/ckd"
-	. "github.com/bnb-chain/tss-lib/v2/crypto/ckd"
+	"github.com/bnb-chain/tss-lib/v3/common"
+	"github.com/bnb-chain/tss-lib/v3/crypto"
+	. "github.com/bnb-chain/tss-lib/v3/crypto/ckd"
 	"github.com/btcsuite/btcd/btcec/v2"
-	"github.com/btcsuite/btcd/chaincfg"
 	"github.com/decred/dcrd/dcrec/edwards/v2"
+
+	"github.com/btcsuite/btcd/chaincfg"
 	"github.com/stretchr/testify/assert"
 )
 
@@ -176,9 +176,9 @@ func TestEddsaPublicDerivation(t *testing.T) {
 	assert.NoError(t, err)
 }
 
-func derivingPubkeyFromPath(masterPub *crypto.ECPoint, chainCode []byte, path []uint32, ec elliptic.Curve) (*big.Int, *ckd.ExtendedKey, error) {
+func derivingPubkeyFromPath(masterPub *crypto.ECPoint, chainCode []byte, path []uint32, ec elliptic.Curve) (*big.Int, *ExtendedKey, error) {
 	net := &chaincfg.MainNetParams
-	extendedParentPk := &ckd.ExtendedKey{
+	extendedParentPk := &ExtendedKey{
 		PublicKey:  masterPub,
 		Depth:      0,
 		ChildIndex: 0,
@@ -187,7 +187,7 @@ func derivingPubkeyFromPath(masterPub *crypto.ECPoint, chainCode []byte, path []
 		Version:    net.HDPrivateKeyID[:],
 	}
 
-	return ckd.DeriveChildKeyFromHierarchy(path, extendedParentPk, ec.Params().N, ec)
+	return DeriveChildKeyFromHierarchy(path, extendedParentPk, ec.Params().N, ec)
 }
 
 func fillBytes(x *big.Int, buf []byte) []byte {
