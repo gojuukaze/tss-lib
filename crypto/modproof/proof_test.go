@@ -13,9 +13,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/bnb-chain/tss-lib/v3/common"
-	. "github.com/bnb-chain/tss-lib/v3/crypto/modproof"
-	"github.com/bnb-chain/tss-lib/v3/ecdsa/keygen"
+	"github.com/bnb-chain/tss-lib/v4/common"
+	. "github.com/bnb-chain/tss-lib/v4/crypto/modproof"
+	"github.com/bnb-chain/tss-lib/v4/ecdsa/keygen"
 
 	"github.com/stretchr/testify/assert"
 )
@@ -125,6 +125,57 @@ func mustSetString(s string) *big.Int {
 		panic("Failed to parse integer: " + s)
 	}
 	return i
+}
+
+func TestVerifyRejectsMalformedN(test *testing.T) {
+	preParams, err := keygen.GeneratePreParams(time.Minute*10, 8)
+	assert.NoError(test, err)
+	P, Q, N := preParams.PaillierSK.P, preParams.PaillierSK.Q, preParams.PaillierSK.N
+	proof, err := NewProof(Session, N, P, Q, rand.Reader)
+	assert.NoError(test, err)
+
+	test.Run("nil N", func(t *testing.T) {
+		assert.False(t, proof.Verify(Session, nil))
+	})
+	test.Run("zero N", func(t *testing.T) {
+		assert.False(t, proof.Verify(Session, big.NewInt(0)))
+	})
+	test.Run("negative N", func(t *testing.T) {
+		assert.False(t, proof.Verify(Session, big.NewInt(-1)))
+	})
+	test.Run("even N", func(t *testing.T) {
+		even := new(big.Int).Lsh(N, 1)
+		assert.False(t, proof.Verify(Session, even))
+	})
+	test.Run("too small N", func(t *testing.T) {
+		small := big.NewInt(15) // 3*5: composite, odd, but only 4 bits
+		assert.False(t, proof.Verify(Session, small))
+	})
+	test.Run("prime N", func(t *testing.T) {
+		// A 2048-bit prime: passes bit-length and oddness, must be rejected
+		// by the ProbablyPrime check before the proof structure is examined.
+		primeN := common.GetRandomPrimeInt(rand.Reader, 2048)
+		assert.False(t, proof.Verify(Session, primeN))
+	})
+}
+
+func TestVerifyRejectsNonUnitZX(test *testing.T) {
+	preParams, err := keygen.GeneratePreParams(time.Minute*10, 8)
+	assert.NoError(test, err)
+	P, Q, N := preParams.PaillierSK.P, preParams.PaillierSK.Q, preParams.PaillierSK.N
+	proof, err := NewProof(Session, N, P, Q, rand.Reader)
+	assert.NoError(test, err)
+
+	test.Run("Z[0] non-unit (factor of N)", func(t *testing.T) {
+		bad := *proof
+		bad.Z[0] = new(big.Int).Set(P)
+		assert.False(t, bad.Verify(Session, N))
+	})
+	test.Run("X[0] non-unit (factor of N)", func(t *testing.T) {
+		bad := *proof
+		bad.X[0] = new(big.Int).Set(Q)
+		assert.False(t, bad.Verify(Session, N))
+	})
 }
 
 func TestAttackMod(test *testing.T) {

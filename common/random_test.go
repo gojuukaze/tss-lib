@@ -14,7 +14,7 @@ import (
 
 	"github.com/stretchr/testify/assert"
 
-	"github.com/bnb-chain/tss-lib/v3/common"
+	"github.com/bnb-chain/tss-lib/v4/common"
 )
 
 const (
@@ -31,6 +31,28 @@ func TestGetRandomPositiveInt(t *testing.T) {
 	rndPos := common.GetRandomPositiveInt(rand.Reader, rnd)
 	assert.NotZero(t, rndPos, "rand int should not be zero")
 	assert.True(t, rndPos.Cmp(big.NewInt(0)) == 1, "rand int should be positive")
+}
+
+func TestGetRandomPositiveIntBoundaries(t *testing.T) {
+	t.Run("nil lessThan returns nil", func(tt *testing.T) {
+		assert.Nil(tt, common.GetRandomPositiveInt(rand.Reader, nil))
+	})
+	t.Run("lessThan == 0 returns nil", func(tt *testing.T) {
+		assert.Nil(tt, common.GetRandomPositiveInt(rand.Reader, big.NewInt(0)))
+	})
+	t.Run("lessThan == 1 returns nil (no value in (0, 1))", func(tt *testing.T) {
+		// Old implementation would loop forever sampling 0; new implementation
+		// rejects up-front because (0, 1) is empty.
+		assert.Nil(tt, common.GetRandomPositiveInt(rand.Reader, big.NewInt(1)))
+	})
+	t.Run("lessThan == 2 always returns 1", func(tt *testing.T) {
+		// (0, 2) = {1} — sampler must return 1, never 0.
+		for i := 0; i < 20; i++ {
+			v := common.GetRandomPositiveInt(rand.Reader, big.NewInt(2))
+			assert.NotNil(tt, v)
+			assert.Equal(tt, int64(1), v.Int64())
+		}
+	})
 }
 
 func TestGetRandomPositiveRelativelyPrimeInt(t *testing.T) {

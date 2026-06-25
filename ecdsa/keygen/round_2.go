@@ -12,11 +12,11 @@ import (
 	"math/big"
 	"sync"
 
-	"github.com/bnb-chain/tss-lib/v3/crypto/facproof"
-	"github.com/bnb-chain/tss-lib/v3/crypto/modproof"
+	"github.com/bnb-chain/tss-lib/v4/crypto/facproof"
+	"github.com/bnb-chain/tss-lib/v4/crypto/modproof"
 
-	"github.com/bnb-chain/tss-lib/v3/common"
-	"github.com/bnb-chain/tss-lib/v3/tss"
+	"github.com/bnb-chain/tss-lib/v4/common"
+	"github.com/bnb-chain/tss-lib/v4/tss"
 )
 
 const (
@@ -137,16 +137,29 @@ func (round *round2) Start() *tss.Error {
 	}
 
 	// 7. BROADCAST de-commitments of Shamir poly*G
-	modProof := &modproof.ProofMod{W: zero, X: *new([80]*big.Int), A: zero, B: zero, Z: *new([80]*big.Int)}
-	if !round.Parameters.NoProofMod() {
-		var err error
-		modProof, err = modproof.NewProof(ContextI, round.save.PaillierSK.N,
-			round.save.PaillierSK.P, round.save.PaillierSK.Q, round.Rand())
-		if err != nil {
-			return round.WrapError(err, round.PartyID())
-		}
+	// SECURITY (SRC-2026-926): ModProof is mandatory — the NoProofMod
+	// compatibility switch was removed. Always generate the Paillier ModProof
+	// (Blum-integer attestation) and the NTilde ModProof.
+	modProof, err := modproof.NewProof(ContextI, round.save.PaillierSK.N,
+		round.save.PaillierSK.P, round.save.PaillierSK.Q, round.Rand())
+	if err != nil {
+		return round.WrapError(err, round.PartyID())
 	}
-	r2msg2 := NewKGRound2Message2(round.PartyID(), round.temp.deCommitPolyG, modProof)
+	// nTildeModProof attests that the prover's own NTilde is a Blum-integer
+	// product of safe primes — blocking smooth-subgroup NTilde injection.
+	// NTilde = (2p+1)(2q+1); LocalPreParams.P, Q store the Germain primes
+	// p, q (used for the DLN proof's subgroup order), NOT the safe-prime
+	// factors of NTilde. Derive the safe primes 2p+1, 2q+1 here so the
+	// ModProof is built from the actual factors of NTilde.
+	one := big.NewInt(1)
+	safePrimeP := new(big.Int).Add(new(big.Int).Lsh(round.save.LocalPreParams.P, 1), one)
+	safePrimeQ := new(big.Int).Add(new(big.Int).Lsh(round.save.LocalPreParams.Q, 1), one)
+	nTildeModProof, err := modproof.NewProof(ContextI, round.save.NTildei,
+		safePrimeP, safePrimeQ, round.Rand())
+	if err != nil {
+		return round.WrapError(err, round.PartyID())
+	}
+	r2msg2 := NewKGRound2Message2(round.PartyID(), round.temp.deCommitPolyG, modProof, nTildeModProof)
 	round.temp.kgRound2Message2s[i] = r2msg2
 	round.out <- r2msg2
 

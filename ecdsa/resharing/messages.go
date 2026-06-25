@@ -10,15 +10,15 @@ import (
 	"crypto/elliptic"
 	"math/big"
 
-	"github.com/bnb-chain/tss-lib/v3/common"
-	"github.com/bnb-chain/tss-lib/v3/crypto"
-	cmt "github.com/bnb-chain/tss-lib/v3/crypto/commitments"
-	"github.com/bnb-chain/tss-lib/v3/crypto/dlnproof"
-	"github.com/bnb-chain/tss-lib/v3/crypto/facproof"
-	"github.com/bnb-chain/tss-lib/v3/crypto/modproof"
-	"github.com/bnb-chain/tss-lib/v3/crypto/paillier"
-	"github.com/bnb-chain/tss-lib/v3/crypto/vss"
-	"github.com/bnb-chain/tss-lib/v3/tss"
+	"github.com/bnb-chain/tss-lib/v4/common"
+	"github.com/bnb-chain/tss-lib/v4/crypto"
+	cmt "github.com/bnb-chain/tss-lib/v4/crypto/commitments"
+	"github.com/bnb-chain/tss-lib/v4/crypto/dlnproof"
+	"github.com/bnb-chain/tss-lib/v4/crypto/facproof"
+	"github.com/bnb-chain/tss-lib/v4/crypto/modproof"
+	"github.com/bnb-chain/tss-lib/v4/crypto/paillier"
+	"github.com/bnb-chain/tss-lib/v4/crypto/vss"
+	"github.com/bnb-chain/tss-lib/v4/tss"
 )
 
 // These messages were generated from Protocol Buffers definitions into ecdsa-resharing.pb.go
@@ -92,6 +92,7 @@ func NewDGRound2Message1(
 	modProof *modproof.ProofMod,
 	NTildei, H1i, H2i *big.Int,
 	dlnProof1, dlnProof2 *dlnproof.Proof,
+	nTildeModProof *modproof.ProofMod,
 ) (tss.ParsedMessage, error) {
 	meta := tss.MessageRouting{
 		From:             from,
@@ -117,21 +118,39 @@ func NewDGRound2Message1(
 		Dlnproof_1: dlnProof1Bz,
 		Dlnproof_2: dlnProof2Bz,
 	}
+	if nTildeModProof != nil {
+		nTildePfBzs := nTildeModProof.Bytes()
+		content.NTildeModProof = nTildePfBzs[:]
+	}
 	msg := tss.NewMessageWrapper(meta, content)
 	return tss.NewMessage(meta, content, msg), nil
 }
 
+// minResharePaillierBitLen mirrors keygen's `minPaillierBitLen` for the
+// resharing path. Same GG18 §3 D3 requirement: |N| >= 2048 for secp256k1.
+const minResharePaillierBitLen = 2048
+
 func (m *DGRound2Message1) ValidateBasic() bool {
-	return m != nil &&
-		// use with NoProofFac()
-		// common.NonEmptyMultiBytes(m.ModProof, modproof.ProofModBytesParts) &&
-		common.NonEmptyBytes(m.PaillierN) &&
-		common.NonEmptyBytes(m.NTilde) &&
-		common.NonEmptyBytes(m.H1) &&
-		common.NonEmptyBytes(m.H2) &&
+	if m == nil ||
+		!common.NonEmptyBytes(m.PaillierN) ||
+		!common.NonEmptyBytes(m.NTilde) ||
+		!common.NonEmptyBytes(m.H1) ||
+		!common.NonEmptyBytes(m.H2) ||
 		// expected len of dln proof = sizeof(int64) + len(alpha) + len(t)
-		common.NonEmptyMultiBytes(m.GetDlnproof_1(), 2+(dlnproof.Iterations*2)) &&
-		common.NonEmptyMultiBytes(m.GetDlnproof_2(), 2+(dlnproof.Iterations*2))
+		!common.NonEmptyMultiBytes(m.GetDlnproof_1(), 2+(dlnproof.Iterations*2)) ||
+		!common.NonEmptyMultiBytes(m.GetDlnproof_2(), 2+(dlnproof.Iterations*2)) {
+		return false
+	}
+	// Align with keygen's bitlen floor at the message-decode layer.
+	// Round 4 also enforces the same floor; this catches malformed
+	// messages earlier for any consumer that runs ValidateBasic alone.
+	if new(big.Int).SetBytes(m.PaillierN).BitLen() < minResharePaillierBitLen {
+		return false
+	}
+	if new(big.Int).SetBytes(m.NTilde).BitLen() < minResharePaillierBitLen {
+		return false
+	}
+	return true
 }
 
 func (m *DGRound2Message1) UnmarshalPaillierPK() *paillier.PublicKey {
@@ -154,6 +173,15 @@ func (m *DGRound2Message1) UnmarshalH2() *big.Int {
 
 func (m *DGRound2Message1) UnmarshalModProof() (*modproof.ProofMod, error) {
 	return modproof.NewProofFromBytes(m.GetModProof())
+}
+
+// UnmarshalNTildeModProof returns the ModProof attesting that the peer's
+// resharing NTilde is a Blum integer. Mirrors keygen's
+// `KGRound2Message2.UnmarshalNTildeModProof`. Returns an error if the peer
+// shipped no/invalid proof; round_4_new_step_2.go now treats that as a hard
+// reject (SRC-2026-926 — the NoProofMod fallback was removed).
+func (m *DGRound2Message1) UnmarshalNTildeModProof() (*modproof.ProofMod, error) {
+	return modproof.NewProofFromBytes(m.GetNTildeModProof())
 }
 
 func (m *DGRound2Message1) UnmarshalDLNProof1() (*dlnproof.Proof, error) {

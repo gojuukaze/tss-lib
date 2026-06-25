@@ -12,17 +12,19 @@ import (
 	"math/big"
 	"sync"
 
-	"github.com/bnb-chain/tss-lib/v3/crypto/facproof"
+	"github.com/bnb-chain/tss-lib/v4/crypto/facproof"
 
 	errors2 "github.com/pkg/errors"
 
-	"github.com/bnb-chain/tss-lib/v3/common"
-	"github.com/bnb-chain/tss-lib/v3/crypto"
-	"github.com/bnb-chain/tss-lib/v3/crypto/commitments"
-	"github.com/bnb-chain/tss-lib/v3/crypto/vss"
-	"github.com/bnb-chain/tss-lib/v3/ecdsa/keygen"
-	"github.com/bnb-chain/tss-lib/v3/tss"
+	"github.com/bnb-chain/tss-lib/v4/common"
+	"github.com/bnb-chain/tss-lib/v4/crypto"
+	"github.com/bnb-chain/tss-lib/v4/crypto/commitments"
+	"github.com/bnb-chain/tss-lib/v4/crypto/vss"
+	"github.com/bnb-chain/tss-lib/v4/ecdsa/keygen"
+	"github.com/bnb-chain/tss-lib/v4/tss"
 )
+
+const paillierBitsLen = 2048
 
 func (round *round4) Start() *tss.Error {
 	if round.started {
@@ -62,6 +64,12 @@ func (round *round4) Start() *tss.Error {
 			r2msg1.UnmarshalNTilde(),
 			r2msg1.UnmarshalH1(),
 			r2msg1.UnmarshalH2()
+		if paiPK.N.BitLen() != paillierBitsLen {
+			return round.WrapError(errors.New("got a paillier modulus with an unexpected bit length"), msg.GetFrom())
+		}
+		if NTildej.BitLen() != paillierBitsLen {
+			return round.WrapError(errors.New("got an NTilde with an unexpected bit length"), msg.GetFrom())
+		}
 		if H1j.Cmp(H2j) == 0 {
 			return round.WrapError(errors.New("h1j and h2j were equal for this party"), msg.GetFrom())
 		}
@@ -76,18 +84,36 @@ func (round *round4) Start() *tss.Error {
 		wg.Add(3)
 		go func(j int, msg tss.ParsedMessage, r2msg1 *DGRound2Message1) {
 			defer wg.Done()
+			ContextJ := common.AppendBigIntToBytesSlice(round.temp.ssid, big.NewInt(int64(j)))
+			// SECURITY (SRC-2026-926): ModProof verification is mandatory; a
+			// missing/invalid proof always attributes the sender as culprit.
+			// The NoProofMod compatibility bypass was removed.
 			modProof, err := r2msg1.UnmarshalModProof()
 			if err != nil {
-				if !round.Parameters.NoProofMod() {
-					paiProofCulprits[j] = msg.GetFrom()
-				}
+				paiProofCulprits[j] = msg.GetFrom()
 				common.Logger.Warningf("modProof verify failed for party %s", msg.GetFrom(), err)
 				return
 			}
-			ContextJ := common.AppendBigIntToBytesSlice(round.temp.ssid, big.NewInt(int64(j)))
 			if ok := modProof.Verify(ContextJ, paiPK.N); !ok {
 				paiProofCulprits[j] = msg.GetFrom()
 				common.Logger.Warningf("modProof verify failed for party %s", msg.GetFrom(), err)
+				return
+			}
+			// Verify the ModProof for the peer's NTilde. Mirrors the
+			// keygen-side check in keygen/round_3.go. Closes the
+			// smooth-subgroup NTilde injection path for resharing — peer's
+			// saved NTilde / H1 / H2 (set below) is bound to a
+			// Blum-integer-product attestation. Also mandatory.
+			nTildeModProof, err := r2msg1.UnmarshalNTildeModProof()
+			if err != nil {
+				paiProofCulprits[j] = msg.GetFrom()
+				common.Logger.Warningf("nTildeModProof not present for party %s: %v", msg.GetFrom(), err)
+				return
+			}
+			NTildej := new(big.Int).SetBytes(r2msg1.GetNTilde())
+			if ok := nTildeModProof.Verify(ContextJ, NTildej); !ok {
+				paiProofCulprits[j] = msg.GetFrom()
+				common.Logger.Warningf("nTildeModProof verify failed for party %s", msg.GetFrom())
 			}
 		}(j, msg, r2msg1)
 		_j := j

@@ -11,11 +11,11 @@ import (
 	"errors"
 	"math/big"
 
-	"github.com/bnb-chain/tss-lib/v3/crypto/modproof"
+	"github.com/bnb-chain/tss-lib/v4/crypto/modproof"
 
-	"github.com/bnb-chain/tss-lib/v3/crypto/dlnproof"
-	"github.com/bnb-chain/tss-lib/v3/ecdsa/keygen"
-	"github.com/bnb-chain/tss-lib/v3/tss"
+	"github.com/bnb-chain/tss-lib/v4/crypto/dlnproof"
+	"github.com/bnb-chain/tss-lib/v4/ecdsa/keygen"
+	"github.com/bnb-chain/tss-lib/v4/tss"
 )
 
 var zero = big.NewInt(0)
@@ -90,18 +90,26 @@ func (round *round2) Start() *tss.Error {
 	dlnProof1 := dlnproof.NewDLNProof(round.temp.ssid, h1i, h2i, alpha, p, q, NTildei, round.Rand())
 	dlnProof2 := dlnproof.NewDLNProof(round.temp.ssid, h2i, h1i, beta, p, q, NTildei, round.Rand())
 
-	modProof := &modproof.ProofMod{W: zero, X: *new([80]*big.Int), A: zero, B: zero, Z: *new([80]*big.Int)}
+	// SECURITY (SRC-2026-926): ModProof is mandatory; the NoProofMod
+	// compatibility switch was removed. Always produce the Paillier and NTilde
+	// ModProofs. nTildeModProof attests that the new-committee party's own
+	// NTilde is a Blum-integer product of safe primes — mirrors the keygen
+	// flow and closes the smooth-subgroup NTilde injection path for resharing.
 	ContextI := append(round.temp.ssid, big.NewInt(int64(i)).Bytes()...)
-	if !round.Parameters.NoProofMod() {
-		var err error
-		modProof, err = modproof.NewProof(ContextI, preParams.PaillierSK.N, preParams.PaillierSK.P, preParams.PaillierSK.Q, round.Rand())
-		if err != nil {
-			return round.WrapError(err, Pi)
-		}
+	modProof, err := modproof.NewProof(ContextI, preParams.PaillierSK.N, preParams.PaillierSK.P, preParams.PaillierSK.Q, round.Rand())
+	if err != nil {
+		return round.WrapError(err, Pi)
+	}
+	one := big.NewInt(1)
+	safePrimeP := new(big.Int).Add(new(big.Int).Lsh(preParams.P, 1), one)
+	safePrimeQ := new(big.Int).Add(new(big.Int).Lsh(preParams.Q, 1), one)
+	nTildeModProof, err := modproof.NewProof(ContextI, preParams.NTildei, safePrimeP, safePrimeQ, round.Rand())
+	if err != nil {
+		return round.WrapError(err, Pi)
 	}
 	r2msg2, err := NewDGRound2Message1(
 		round.NewParties().IDs().Exclude(round.PartyID()), round.PartyID(),
-		&preParams.PaillierSK.PublicKey, modProof, preParams.NTildei, preParams.H1i, preParams.H2i, dlnProof1, dlnProof2)
+		&preParams.PaillierSK.PublicKey, modProof, preParams.NTildei, preParams.H1i, preParams.H2i, dlnProof1, dlnProof2, nTildeModProof)
 	if err != nil {
 		return round.WrapError(err, Pi)
 	}

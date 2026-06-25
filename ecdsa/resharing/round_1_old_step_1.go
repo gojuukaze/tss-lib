@@ -11,12 +11,12 @@ import (
 	"fmt"
 	"math/big"
 
-	"github.com/bnb-chain/tss-lib/v3/crypto"
-	"github.com/bnb-chain/tss-lib/v3/crypto/commitments"
-	"github.com/bnb-chain/tss-lib/v3/crypto/vss"
-	"github.com/bnb-chain/tss-lib/v3/ecdsa/keygen"
-	"github.com/bnb-chain/tss-lib/v3/ecdsa/signing"
-	"github.com/bnb-chain/tss-lib/v3/tss"
+	"github.com/bnb-chain/tss-lib/v4/crypto"
+	"github.com/bnb-chain/tss-lib/v4/crypto/commitments"
+	"github.com/bnb-chain/tss-lib/v4/crypto/vss"
+	"github.com/bnb-chain/tss-lib/v4/ecdsa/keygen"
+	"github.com/bnb-chain/tss-lib/v4/ecdsa/signing"
+	"github.com/bnb-chain/tss-lib/v4/tss"
 )
 
 // round 1 represents round 1 of the keygen part of the GG18 ECDSA TSS spec (Gennaro, Goldfeder; 2018)
@@ -40,14 +40,14 @@ func (round *round1) Start() *tss.Error {
 	}
 	round.allOldOK()
 
-	// GG20 session binding: use caller-provided session nonce if available.
-	// For resharing, all parties must agree on the nonce via external coordination
-	// (e.g., coordinator-assigned session ID) since no shared session-unique
-	// value is available within the protocol itself.
+	// Require caller-provided SessionNonce — see ecdsa/keygen/round_1.go
+	// for full rationale (applies to resharing too).
 	if nonce := round.Params().SessionNonce(); nonce != nil {
 		round.temp.ssidNonce = new(big.Int).Set(nonce)
 	} else {
-		round.temp.ssidNonce = new(big.Int).SetUint64(0)
+		return round.WrapError(errors.New(
+			"resharing requires a session nonce; call Parameters.SetSessionNonce " +
+				"with a value agreed by all parties before starting the round"))
 	}
 	ssid, err := round.getSSID()
 	if err != nil {
@@ -63,7 +63,10 @@ func (round *round1) Start() *tss.Error {
 		return round.WrapError(fmt.Errorf("t+1=%d is not satisfied by the key count of %d", round.Threshold()+1, len(ks)), round.PartyID())
 	}
 	newKs := round.NewParties().IDs().Keys()
-	wi, _ := signing.PrepareForSigning(round.Params().EC(), i, len(round.OldParties().IDs()), xi, ks, bigXj)
+	wi, _, err := signing.PrepareForSigning(round.Params().EC(), i, len(round.OldParties().IDs()), xi, ks, bigXj)
+	if err != nil {
+		return round.WrapError(err, round.PartyID())
+	}
 
 	// 2.
 	vi, shares, err := vss.Create(round.Params().EC(), round.NewThreshold(), wi, newKs, round.Rand())

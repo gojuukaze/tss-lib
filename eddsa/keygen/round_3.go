@@ -13,11 +13,11 @@ import (
 	"github.com/hashicorp/go-multierror"
 	errors2 "github.com/pkg/errors"
 
-	"github.com/bnb-chain/tss-lib/v3/common"
-	"github.com/bnb-chain/tss-lib/v3/crypto"
-	"github.com/bnb-chain/tss-lib/v3/crypto/commitments"
-	"github.com/bnb-chain/tss-lib/v3/crypto/vss"
-	"github.com/bnb-chain/tss-lib/v3/tss"
+	"github.com/bnb-chain/tss-lib/v4/common"
+	"github.com/bnb-chain/tss-lib/v4/crypto"
+	"github.com/bnb-chain/tss-lib/v4/crypto/commitments"
+	"github.com/bnb-chain/tss-lib/v4/crypto/vss"
+	"github.com/bnb-chain/tss-lib/v4/tss"
 )
 
 func (round *round3) Start() *tss.Error {
@@ -75,7 +75,13 @@ func (round *round3) Start() *tss.Error {
 			KGDj := r2msg2.UnmarshalDeCommitment()
 			cmtDeCmt := commitments.HashCommitDecommit{C: KGCj, D: KGDj}
 			ok, flatPolyGs := cmtDeCmt.DeCommit()
-			if !ok || flatPolyGs == nil {
+			// SECURITY (SRC-2026-925): require exactly (threshold+1) VSS
+			// commitment points = (threshold+1)*2 flat coordinates. A 1-element
+			// decommitment [r] passes Verify (DeCommit returns an empty non-nil
+			// slice) and previously reached `PjVs[0]` below, panicking the
+			// keygen goroutine ("index out of range [0] with length 0") with no
+			// fault attribution and no recover().
+			if !ok || flatPolyGs == nil || len(flatPolyGs) != (round.Threshold()+1)*2 {
 				ch <- vssOut{errors.New("de-commitment verify failed"), nil}
 				return
 			}

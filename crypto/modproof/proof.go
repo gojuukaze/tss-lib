@@ -7,19 +7,79 @@
 package modproof
 
 import (
+	"encoding/binary"
 	"fmt"
 	"io"
 	"math/big"
 
-	"github.com/bnb-chain/tss-lib/v3/common"
+	"github.com/bnb-chain/tss-lib/v4/common"
 )
 
 const (
 	Iterations         = 80
 	ProofModBytesParts = Iterations*2 + 3
+	// Minimum modulus bit length accepted by Verify. Matches the keygen/
+	// resharing wire-format checks for NTilde (paillierBitsLen = 2048).
+	verifyMinModulusBitLen = 2048
+	// Miller-Rabin rounds for the composite check; 30 gives ≤4^-30
+	// false-positive rate against arbitrary composites.
+	verifyPrimalityRounds = 30
+	// fsDomainTag is the per-proof-type Fiat-Shamir domain separator
+	// (see facproof.fsSession docstring for rationale).
+	fsDomainTag = "tss-lib.v4.modproof"
 )
 
 var one = big.NewInt(1)
+
+func fsSession(Session []byte) []byte {
+	return append([]byte(fsDomainTag+"|"), Session...)
+}
+
+// sampleYModN deterministically derives Y_i ∈ [0, N) by seeding from the
+// Fiat-Shamir transcript, expanding via SHA512_256 counter mode to the
+// bit length of N, masking down to exactly N.BitLen() bits, and then
+// rejecting candidates ≥ N. Rejection probability per attempt is at
+// most 1/2 because N ∈ (2^{bitlen−1}, 2^bitlen], so the loop is bounded.
+//
+// This replaces the earlier `ModReduceHash(N, hash)` derivation, which
+// silently produced Y_i in a 256-bit subset of [0, N) when N >> 2^256
+// (e.g. for 2048-bit NTilde). The 256-bit support set was enough for
+// the soundness error magnitude per iteration but did not match the
+// `Y <- Z_N` distribution the paper's formal analysis assumes; the
+// expand-then-reject sampler closes that gap. Wire-incompat with v3 by
+// design — consumed by the v4 module bump.
+func sampleYModN(Session []byte, N *big.Int, transcript []*big.Int) *big.Int {
+	seedBig := common.SHA512_256i_TAGGED(fsSession(Session), transcript...)
+	// Pad the seed to a fixed 32-byte width so the counter mixing below
+	// is canonical regardless of leading-zero bytes in seedBig.Bytes().
+	seed := seedBig.Bytes()
+	if len(seed) < 32 {
+		pad := make([]byte, 32-len(seed))
+		seed = append(pad, seed...)
+	}
+	bitLen := N.BitLen()
+	blocks := (bitLen + 255) / 256
+	mask := new(big.Int).Lsh(one, uint(bitLen))
+	mask.Sub(mask, one)
+	counterBz := make([]byte, 4)
+	for counter := uint32(0); counter < 1<<31; counter++ {
+		binary.BigEndian.PutUint32(counterBz, counter)
+		combined := make([]byte, 0, blocks*32)
+		for j := 0; j < blocks; j++ {
+			block := common.SHA512_256(seed, counterBz, []byte{byte(j)})
+			combined = append(combined, block...)
+		}
+		candidate := new(big.Int).SetBytes(combined)
+		candidate.And(candidate, mask)
+		if candidate.Cmp(N) < 0 {
+			return candidate
+		}
+	}
+	// 1<<31 attempts at rejection rate ≤ 1/2 has failure probability
+	// 2^-(2^31), which is far below any cryptographic concern; reaching
+	// this point indicates a bug in N's bit-length / mask derivation.
+	panic("modproof.sampleYModN: exhausted counter (mask/N invariant violated)")
+}
 
 type (
 	ProofMod struct {
@@ -41,11 +101,12 @@ func NewProof(Session []byte, N, P, Q *big.Int, rand io.Reader) (*ProofMod, erro
 	// Fig 16.1
 	W := common.GetRandomQuadraticNonResidue(rand, N)
 
-	// Fig 16.2
+	// Fig 16.2: Y_i ~ Z_N derived via expand-then-reject sampling so the
+	// support set matches the paper's `Y <- Z_N` assumption rather than
+	// landing in a 256-bit subset (see sampleYModN docstring).
 	Y := [Iterations]*big.Int{}
 	for i := range Y {
-		ei := common.SHA512_256i_TAGGED(Session, append([]*big.Int{W, N}, Y[:i]...)...)
-		Y[i] = common.RejectionSample(N, ei)
+		Y[i] = sampleYModN(Session, N, append([]*big.Int{W, N}, Y[:i]...))
 	}
 
 	// Fig 16.3
@@ -152,7 +213,15 @@ func (pf *ProofMod) Verify(Session []byte, N *big.Int) bool {
 	if pf == nil || !pf.ValidateBasic() {
 		return false
 	}
-	// TODO: add basic properties checker
+	// Validate N before any operation that requires it to be a positive odd
+	// composite. big.Jacobi panics on nil/non-positive/even modulus, and
+	// RejectionSample loops forever on N <= 1, so the original ordering
+	// (which only checked oddness/compositeness at line ~192) left a panic
+	// surface reachable from a malformed message.
+	if N == nil || N.Sign() != 1 || N.Bit(0) == 0 ||
+		N.BitLen() < verifyMinModulusBitLen || N.ProbablyPrime(verifyPrimalityRounds) {
+		return false
+	}
 	if isQuadraticResidue(pf.W, N) {
 		return false
 	}
@@ -167,9 +236,18 @@ func (pf *ProofMod) Verify(Session []byte, N *big.Int) bool {
 		if pf.Z[i].Sign() != 1 || pf.Z[i].Cmp(N) != -1 {
 			return false
 		}
+		// Honest Z[i] = Y[i]^(N^-1 mod φ) is in Z_N*; rejecting non-units
+		// closes the defense-in-depth gap where a malicious prover supplies
+		// a non-coprime root that happens to satisfy the modexp identity.
+		if new(big.Int).GCD(nil, nil, pf.Z[i], N).Cmp(one) != 0 {
+			return false
+		}
 	}
 	for i := range pf.X {
 		if pf.X[i].Sign() != 1 || pf.X[i].Cmp(N) != -1 {
+			return false
+		}
+		if new(big.Int).GCD(nil, nil, pf.X[i], N).Cmp(one) != 0 {
 			return false
 		}
 	}
@@ -183,15 +261,7 @@ func (pf *ProofMod) Verify(Session []byte, N *big.Int) bool {
 	modN := common.ModInt(N)
 	Y := [Iterations]*big.Int{}
 	for i := range Y {
-		ei := common.SHA512_256i_TAGGED(Session, append([]*big.Int{pf.W, N}, Y[:i]...)...)
-		Y[i] = common.RejectionSample(N, ei)
-	}
-
-	// Fig 16. Verification
-	{
-		if N.Bit(0) == 0 || N.ProbablyPrime(30) {
-			return false
-		}
+		Y[i] = sampleYModN(Session, N, append([]*big.Int{pf.W, N}, Y[:i]...))
 	}
 
 	chs := make(chan bool, Iterations*2)

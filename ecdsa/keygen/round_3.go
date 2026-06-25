@@ -13,11 +13,11 @@ import (
 	"github.com/hashicorp/go-multierror"
 	errors2 "github.com/pkg/errors"
 
-	"github.com/bnb-chain/tss-lib/v3/common"
-	"github.com/bnb-chain/tss-lib/v3/crypto"
-	"github.com/bnb-chain/tss-lib/v3/crypto/commitments"
-	"github.com/bnb-chain/tss-lib/v3/crypto/vss"
-	"github.com/bnb-chain/tss-lib/v3/tss"
+	"github.com/bnb-chain/tss-lib/v4/common"
+	"github.com/bnb-chain/tss-lib/v4/crypto"
+	"github.com/bnb-chain/tss-lib/v4/crypto/commitments"
+	"github.com/bnb-chain/tss-lib/v4/crypto/vss"
+	"github.com/bnb-chain/tss-lib/v4/tss"
 )
 
 func (round *round3) Start() *tss.Error {
@@ -74,7 +74,12 @@ func (round *round3) Start() *tss.Error {
 			KGDj := r2msg2.UnmarshalDeCommitment()
 			cmtDeCmt := commitments.HashCommitDecommit{C: KGCj, D: KGDj}
 			ok, flatPolyGs := cmtDeCmt.DeCommit()
-			if !ok || flatPolyGs == nil {
+			// SECURITY (SRC-2026-925): enforce the exact decommitment length.
+			// ECDSA reaches PjVs via PjShare.Verify (which checks len) and the
+			// later Vc[c].Add(PjVs[c]) indexing; guarding here keeps the path
+			// uniform with the EdDSA fix and rejects a short/empty decommitment
+			// (e.g. a 1-element [r]) before any out-of-range indexing.
+			if !ok || flatPolyGs == nil || len(flatPolyGs) != (round.Threshold()+1)*2 {
 				ch <- vssOut{errors.New("de-commitment verify failed"), nil}
 				return
 			}
@@ -83,20 +88,33 @@ func (round *round3) Start() *tss.Error {
 				ch <- vssOut{err, nil}
 				return
 			}
+			// SECURITY (SRC-2026-926): ModProof verification is mandatory.
+			// A missing or invalid Paillier ModProof is a hard reject — it is
+			// the only check that proves N is a true biprime (no small
+			// factors); without it a smooth/factorable modulus enables MtA
+			// key-share extraction. The NoProofMod compatibility bypass was
+			// removed.
 			modProof, err := r2msg2.UnmarshalModProof()
-			if err != nil && round.Parameters.NoProofMod() {
-				// For old parties, the modProof could be not exist
-				// Not return error for compatibility reason
-				common.Logger.Warningf("modProof not exist:%s", Ps[j])
-			} else {
-				if err != nil {
-					ch <- vssOut{errors.New("modProof verify failed"), nil}
-					return
-				}
-				if ok = modProof.Verify(ContextJ, round.save.PaillierPKs[j].N); !ok {
-					ch <- vssOut{errors.New("modProof verify failed"), nil}
-					return
-				}
+			if err != nil {
+				ch <- vssOut{errors.New("modProof verify failed"), nil}
+				return
+			}
+			if ok = modProof.Verify(ContextJ, round.save.PaillierPKs[j].N); !ok {
+				ch <- vssOut{errors.New("modProof verify failed"), nil}
+				return
+			}
+			// Verify the ModProof for the peer's NTilde. The proof attests
+			// NTildej is a Blum-integer product of safe primes — closes the
+			// smooth-subgroup NTilde injection path that the 2048-bit BitLen
+			// check cannot detect. Also mandatory.
+			nTildeModProof, err := r2msg2.UnmarshalNTildeModProof()
+			if err != nil {
+				ch <- vssOut{errors.New("nTildeModProof verify failed"), nil}
+				return
+			}
+			if ok = nTildeModProof.Verify(ContextJ, round.save.NTildej[j]); !ok {
+				ch <- vssOut{errors.New("nTildeModProof verify failed"), nil}
+				return
 			}
 			r2msg1 := round.temp.kgRound2Message1s[j].Content().(*KGRound2Message1)
 			PjShare := vss.Share{

@@ -11,7 +11,7 @@ import (
 	"fmt"
 	"sync"
 
-	"github.com/bnb-chain/tss-lib/v3/common"
+	"github.com/bnb-chain/tss-lib/v4/common"
 )
 
 type Party interface {
@@ -141,6 +141,34 @@ func BaseStart(p Party, task string, prepare ...func(Round) *Error) *Error {
 		common.Logger.Debugf("party %s: %s round %d finished", p.round().Params().PartyID(), task, 1)
 	}()
 	return p.round().Start()
+}
+
+// IsSameMessage reports whether two ParsedMessage values carry identical
+// content. Used by per-protocol StoreMessage implementations to distinguish
+// legitimate at-least-once redelivery (same content, idempotent) from
+// adversarial intra-session replacement (different content, must be
+// rejected). Returns true if the wire-encoded bytes match exactly.
+func IsSameMessage(a, b ParsedMessage) bool {
+	if a == nil || b == nil {
+		return a == nil && b == nil
+	}
+	if a == b {
+		return true
+	}
+	aBz, _, errA := a.WireBytes()
+	bBz, _, errB := b.WireBytes()
+	if errA != nil || errB != nil {
+		return false
+	}
+	if len(aBz) != len(bBz) {
+		return false
+	}
+	for i := range aBz {
+		if aBz[i] != bBz[i] {
+			return false
+		}
+	}
+	return true
 }
 
 // an implementation of Update that is shared across the different types of parties (keygen, signing, dynamic groups)

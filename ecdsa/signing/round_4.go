@@ -12,9 +12,9 @@ import (
 
 	errors2 "github.com/pkg/errors"
 
-	"github.com/bnb-chain/tss-lib/v3/common"
-	"github.com/bnb-chain/tss-lib/v3/crypto/schnorr"
-	"github.com/bnb-chain/tss-lib/v3/tss"
+	"github.com/bnb-chain/tss-lib/v4/common"
+	"github.com/bnb-chain/tss-lib/v4/crypto/schnorr"
+	"github.com/bnb-chain/tss-lib/v4/tss"
 )
 
 func (round *round4) Start() *tss.Error {
@@ -47,6 +47,9 @@ func (round *round4) Start() *tss.Error {
 		thetaInverse = ctModN.ModInverseCT(thetaInverse)
 	} else {
 		thetaInverse = modN.ModInverse(thetaInverse)
+	}
+	if thetaInverse == nil {
+		return round.WrapError(errors.New("theta inverse is nil"))
 	}
 	i := round.PartyID().Index
 	ContextI := append(round.temp.ssid, new(big.Int).SetUint64(uint64(i)).Bytes()...)

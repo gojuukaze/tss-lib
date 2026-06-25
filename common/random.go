@@ -39,28 +39,47 @@ func MustGetRandomInt(rand io.Reader, bits int) *big.Int {
 	return n
 }
 
+// GetRandomPositiveInt returns a uniformly random integer in the open
+// interval (0, lessThan). The lower bound is strict: 0 is never
+// returned. This matches the name's "Positive" claim and the
+// assumption made by every Verify-side `IsInIntervalPositive` check on
+// values produced by this sampler.
+//
+// Returns nil if `lessThan` is nil, ≤ 1 (no value in (0, 1) exists),
+// or if the underlying RNG misbehaves.
 func GetRandomPositiveInt(rand io.Reader, lessThan *big.Int) *big.Int {
-	if lessThan == nil || zero.Cmp(lessThan) != -1 {
+	if lessThan == nil || lessThan.Cmp(one) <= 0 {
 		return nil
 	}
-	if mustGetRandomIntMaxBits < lessThan.BitLen() {
-		panic(fmt.Errorf("MustGetRandomInt: bits should be positive, non-zero and less than %d", mustGetRandomIntMaxBits))
-	}
-	// var try *big.Int
-	// for {
-	// 	try = MustGetRandomInt(rand, lessThan.BitLen())
-	// 	if try.Cmp(lessThan) < 0 {
-	// 		break
-	// 	}
-	// }
-	// return try
-	// 直接用rand.Int生成小于lessThan的随机数
-	try, err := cryptorand.Int(rand, lessThan)
-	if err != nil {
-		panic(errors.Wrap(err, "rand.Int failure in GetRandomPositiveInt!"))
+	var try *big.Int
+	for {
+		try = MustGetRandomInt(rand, lessThan.BitLen())
+		if try.Sign() > 0 && try.Cmp(lessThan) < 0 {
+			break
+		}
 	}
 	return try
 }
+
+// todo GetRandomPositiveInt 看起来可以改为这个，暂时不改动
+// func GetRandomPositiveInt(rand io.Reader, lessThan *big.Int) *big.Int {
+// 	if lessThan == nil || lessThan.Cmp(one) <= 0 {
+// 		return nil
+// 	}
+// 	if mustGetRandomIntMaxBits < lessThan.BitLen() {
+// 		panic(fmt.Errorf("GetRandomPositiveInt: bits should be positive, non-zero and less than %d", mustGetRandomIntMaxBits))
+// 	}
+//
+// 	for {
+// 		try, err := cryptorand.Int(rand, lessThan)
+// 		if err != nil {
+// 			panic(errors.Wrap(err, "rand.Int failure in GetRandomPositiveInt!"))
+// 		}
+// 		if try.Sign() > 0 {
+// 			return try
+// 		}
+// 	}
+// }
 
 func GetRandomPrimeInt(rand io.Reader, bits int) *big.Int {
 	if bits <= 0 {
@@ -117,23 +136,10 @@ func GetRandomGeneratorOfTheQuadraticResidue(rand io.Reader, n *big.Int) *big.In
 
 // GetRandomQuadraticNonResidue returns a quadratic non residue of odd n.
 func GetRandomQuadraticNonResidue(rand io.Reader, n *big.Int) *big.Int {
-	// for {
-	// 	w := GetRandomPositiveInt(rand, n)
-	// 	if big.Jacobi(w, n) == -1 {
-	// 		return w
-	// 	}
-	// }
-	// 这里只需要随机生成小于n的数，就不用GetRandomPositiveInt了
 	for {
-
-		// 生成 [2, n-1] 范围内的随机数
-		a, err := cryptorand.Int(rand, new(big.Int).Sub(n, two))
-		if err != nil {
-			panic(err)
-		}
-		a.Add(a, two)
-		if big.Jacobi(a, n) == -1 {
-			return a
+		w := GetRandomPositiveInt(rand, n)
+		if big.Jacobi(w, n) == -1 {
+			return w
 		}
 	}
 }

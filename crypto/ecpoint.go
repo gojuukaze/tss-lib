@@ -18,7 +18,7 @@ import (
 
 	"github.com/decred/dcrd/dcrec/edwards/v2"
 
-	"github.com/bnb-chain/tss-lib/v3/tss"
+	"github.com/bnb-chain/tss-lib/v4/tss"
 )
 
 // ECPoint convenience helper
@@ -55,19 +55,51 @@ func (p *ECPoint) Y() *big.Int {
 }
 
 func (p *ECPoint) Add(p1 *ECPoint) (*ECPoint, error) {
+	// SECURITY (SRC-2026-641): a nil operand means an upstream
+	// ScalarMult/ScalarBaseMult returned nil (identity / off-curve result).
+	// Return an error instead of dereferencing nil via X()/Y() so callers can
+	// attribute the failure to the responsible peer rather than crashing the
+	// process. Every Add call site already checks the returned error.
+	if p == nil || p1 == nil {
+		return nil, errors.New("ECPoint.Add: nil operand")
+	}
 	x, y := p.curve.Add(p.X(), p.Y(), p1.X(), p1.Y())
 	return NewECPoint(p.curve, x, y)
 }
 
+// ScalarMult returns p * k. When k ≡ 0 mod n (identity) or any other input
+// produces an off-curve representation, ScalarMult returns nil rather than
+// panicking. Callers MUST check the returned pointer before use; pairs of
+// hardened call sites (Schnorr / VSS / MtA Verify) validate scalars upstream,
+// so a nil return here indicates either an unvalidated direct API consumer
+// or a degenerate honest case (zero contribution) that should be treated as
+// an error by the protocol.
 func (p *ECPoint) ScalarMult(k *big.Int) *ECPoint {
-	// fix by https://github.com/bnb-chain/tss-lib/pull/295/files
-	kModN := new(big.Int).Mod(k, p.curve.Params().N)
-	x, y := p.curve.ScalarMult(p.X(), p.Y(), kModN.Bytes())
-	newP, err := NewECPoint(p.curve, x, y) // it must be on the curve, no need to check.
+	// 旧版合并了https://github.com/bnb-chain/tss-lib/pull/295/files 这个修改，
+	// 不确定v4版是否需要
+	if p == nil || k == nil {
+		return nil
+	}
+	x, y := p.curve.ScalarMult(p.X(), p.Y(), k.Bytes())
+	newP, err := NewECPoint(p.curve, x, y)
 	if err != nil {
-		panic(fmt.Errorf("scalar mult to an ecpoint %s", err.Error()))
+		return nil
 	}
 	return newP
+}
+
+// ScalarMultErr is the explicit-error variant of ScalarMult. Returns
+// (*ECPoint, error) instead of the nil-on-error convention; useful for
+// internal callers that want to propagate the curve error.
+func (p *ECPoint) ScalarMultErr(k *big.Int) (*ECPoint, error) {
+	if p == nil {
+		return nil, errors.New("ScalarMultErr: receiver is nil")
+	}
+	if k == nil {
+		return nil, errors.New("ScalarMultErr: scalar k is nil")
+	}
+	x, y := p.curve.ScalarMult(p.X(), p.Y(), k.Bytes())
+	return NewECPoint(p.curve, x, y)
 }
 
 func (p *ECPoint) ToECDSAPubKey() *ecdsa.PublicKey {
@@ -99,22 +131,122 @@ func (p *ECPoint) SetCurve(curve elliptic.Curve) *ECPoint {
 }
 
 func (p *ECPoint) ValidateBasic() bool {
-	return p != nil && p.coords[0] != nil && p.coords[1] != nil && p.IsOnCurve()
+	return p != nil && p.coords[0] != nil && p.coords[1] != nil && p.IsOnCurve() && !p.IsIdentity()
+}
+
+// IsIdentity reports whether p represents the identity element of its
+// curve. The two affine representations checked here cover both curve
+// families used by tss-lib:
+//
+//   - Edwards-form curves (Ed25519 via decred/dcrd/dcrec/edwards/v2):
+//     the affine identity is (0, 1) and IS on-curve, so it passes the
+//     isOnCurve test alone. Without this check, a malicious party can
+//     submit (0, 1) as a Schnorr proof's commitment or as a VSS share
+//     and the verifier accepts a degenerate proof.
+//   - Weierstrass-form curves (secp256k1, NIST): the identity is the
+//     point-at-infinity, conventionally (0, 0) in affine form. That
+//     coordinate is NOT on-curve and is already rejected by isOnCurve.
+//     The (0, 0) branch here is defense-in-depth in case future curve
+//     code surfaces a different infinity representation.
+//
+// Returns false for nil points (no coordinate to inspect).
+func (p *ECPoint) IsIdentity() bool {
+	if p == nil || p.coords[0] == nil || p.coords[1] == nil {
+		return false
+	}
+	if p.coords[0].Sign() != 0 {
+		return false
+	}
+	return p.coords[1].Sign() == 0 || p.coords[1].Cmp(big.NewInt(1)) == 0
+}
+
+// IsInPrimeOrderSubgroup reports whether p lies in the prime-order
+// subgroup of its curve, i.e. `[curve.N] * p == identity` where
+// `curve.N` is the prime subgroup order.
+//
+// For prime-order curves (cofactor 1 — secp256k1 / NIST), every on-curve
+// point trivially satisfies this by Lagrange's theorem; the explicit
+// computation here just confirms it at the cost of one extra ScalarMult.
+//
+// For composite-cofactor curves (Ed25519, cofactor 8) the check is
+// load-bearing: on-curve membership alone admits 8 small-order points
+// (the cofactor subgroup) that an adversary can submit as a Schnorr
+// commitment, VSS share, etc. to mount small-subgroup attacks. Callers
+// in those code paths should use this check (typically via
+// ValidateInSubgroup) on every untrusted EC point.
+//
+// Returns false for nil points or points whose [N]·p does not yield the
+// identity element.
+func (p *ECPoint) IsInPrimeOrderSubgroup() bool {
+	if p == nil || p.coords[0] == nil || p.coords[1] == nil || p.curve == nil {
+		return false
+	}
+	n := p.curve.Params().N
+	np := p.ScalarMult(n)
+	if np == nil {
+		// ScalarMult returns nil when the curve.ScalarMult result is the
+		// point-at-infinity (rejected by isOnCurve on Weierstrass). That
+		// IS the identity / prime-order witness for those curves.
+		return true
+	}
+	return np.IsIdentity()
+}
+
+// ValidateInSubgroup is the stricter sibling of ValidateBasic for
+// untrusted EC points on curves with composite cofactor. It runs the
+// basic on-curve / non-identity / non-nil checks and additionally
+// requires the point to live in the prime-order subgroup. On
+// prime-order curves (cofactor 1) the subgroup check is structurally
+// guaranteed by IsOnCurve and is skipped to save a ScalarMult.
+//
+// Callers consuming attacker-controlled EC points (Schnorr Alpha / X /
+// V / R, VSS vs[j], MtA ProofBobWC pf.U, etc.) should prefer this over
+// ValidateBasic.
+func (p *ECPoint) ValidateInSubgroup() bool {
+	if !p.ValidateBasic() {
+		return false
+	}
+	if !tss.HasCompositeCofactor(p.curve) {
+		return true
+	}
+	return p.IsInPrimeOrderSubgroup()
 }
 
 func (p *ECPoint) EightInvEight() *ECPoint {
-	return p.ScalarMult(eight).ScalarMult(eightInv)
+	q := p.ScalarMult(eight)
+	if q == nil {
+		return nil
+	}
+	return q.ScalarMult(eightInv)
 }
 
+// ScalarBaseMult returns g * k (curve base point times k). On any error
+// (including k ≡ 0 mod n which yields the off-curve identity) returns nil.
+// See ScalarMult doc for the nil-on-error rationale.
 func ScalarBaseMult(curve elliptic.Curve, k *big.Int) *ECPoint {
-	// fix by https://github.com/bnb-chain/tss-lib/pull/295/files
-	kModN := new(big.Int).Mod(k, curve.Params().N)
-	x, y := curve.ScalarBaseMult(kModN.Bytes())
-	p, err := NewECPoint(curve, x, y) // it must be on the curve, no need to check.
+	// 旧版合并了https://github.com/bnb-chain/tss-lib/pull/295/files 这个修改，
+	// 不确定v4版是否需要
+	if curve == nil || k == nil {
+		return nil
+	}
+	x, y := curve.ScalarBaseMult(k.Bytes())
+	p, err := NewECPoint(curve, x, y)
 	if err != nil {
-		panic(fmt.Errorf("scalar mult to an ecpoint %s", err.Error()))
+		return nil
 	}
 	return p
+}
+
+// ScalarBaseMultErr is the explicit-error variant of ScalarBaseMult.
+func ScalarBaseMultErr(curve elliptic.Curve, k *big.Int) (*ECPoint, error) {
+	if curve == nil {
+		return nil, errors.New("ScalarBaseMultErr: curve is nil")
+	}
+	if k == nil {
+		return nil, errors.New("ScalarBaseMultErr: scalar k is nil")
+	}
+	x, y := curve.ScalarBaseMult(k.Bytes())
+	return NewECPoint(curve, x, y)
 }
 
 func isOnCurve(c elliptic.Curve, x, y *big.Int) bool {

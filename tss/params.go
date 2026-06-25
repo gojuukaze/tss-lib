@@ -9,10 +9,13 @@ package tss
 import (
 	"crypto/elliptic"
 	"crypto/rand"
+	"fmt"
 	"io"
 	"math/big"
 	"runtime"
 	"time"
+
+	"github.com/bnb-chain/tss-lib/v4/common"
 )
 
 type (
@@ -30,8 +33,13 @@ type (
 		// all parties (e.g., a coordinator-assigned session ID) to prevent cross-session
 		// proof replay. If not set, falls back to 0 (no session binding).
 		sessionNonce *big.Int
-		// for keygen
-		noProofMod bool
+		// for legacy keygen/resharing compatibility only. This flag weakens
+		// proof verification and should not be enabled in production.
+		// NOTE: the former noProofMod flag was removed (SRC-2026-926) —
+		// Paillier and NTilde ModProof verification is now mandatory, because
+		// ModProof is the only check that proves a peer's modulus is a true
+		// biprime (no small factors), without which a smooth/factorable
+		// modulus enables full MtA key-share extraction.
 		noProofFac bool
 		// random sources
 		partialKeyRand, rand io.Reader
@@ -49,8 +57,35 @@ const (
 	defaultSafePrimeGenTimeout = 5 * time.Minute
 )
 
-// Exported, used in `tss` client
+// Exported, used in `tss` client.
+//
+// Panics on invalid threshold / partyCount inputs (threshold < 1,
+// partyCount < 2, or threshold >= partyCount). These constraints come
+// from Shamir VSS — a valid (t, n) threshold scheme requires
+// 1 <= t < n with n >= 2. Invalid combinations would otherwise surface
+// as opaque panics deep in protocol execution; failing here gives
+// callers an immediate, clear signal.
 func NewParameters(ec elliptic.Curve, ctx *PeerContext, partyID *PartyID, partyCount, threshold int) *Parameters {
+	if partyCount < 2 {
+		panic(fmt.Errorf("NewParameters: partyCount must be >= 2, got %d", partyCount))
+	}
+	if threshold < 1 {
+		panic(fmt.Errorf("NewParameters: threshold must be >= 1, got %d", threshold))
+	}
+	if threshold >= partyCount {
+		panic(fmt.Errorf("NewParameters: threshold must be < partyCount, got t=%d n=%d",
+			threshold, partyCount))
+	}
+	// Reject PartyID sets whose keys collide modulo the curve order q.
+	// SortPartyIDs dedups raw bytes, but Lagrange arithmetic downstream
+	// (eddsa/ecdsa signing prepare.go, vss.Shares.ReConstruct) treats
+	// ID as `ID mod q`. A malicious party registering key = honest_key + q
+	// passes SortPartyIDs but causes `ModInverse((kj - ki) mod q, q)` to
+	// hit a zero divisor and panic at signing time. Fail here instead so
+	// the bad configuration never reaches a protocol round.
+	if ctx != nil {
+		assertDistinctIDsModQ(ec, ctx.IDs())
+	}
 	return &Parameters{
 		ec:                  ec,
 		parties:             ctx,
@@ -101,19 +136,12 @@ func (params *Parameters) SetSafePrimeGenTimeout(timeout time.Duration) {
 	params.safePrimeGenTimeout = timeout
 }
 
-func (params *Parameters) NoProofMod() bool {
-	return params.noProofMod
-}
-
 func (params *Parameters) NoProofFac() bool {
 	return params.noProofFac
 }
 
-func (params *Parameters) SetNoProofMod() {
-	params.noProofMod = true
-}
-
 func (params *Parameters) SetNoProofFac() {
+	common.Logger.Warningf("SetNoProofFac enables legacy compatibility mode and weakens proof verification; do not use in production")
 	params.noProofFac = true
 }
 
@@ -152,11 +180,61 @@ func (params *Parameters) SetSessionNonce(nonce *big.Int) {
 // Exported, used in `tss` client
 func NewReSharingParameters(ec elliptic.Curve, ctx, newCtx *PeerContext, partyID *PartyID, partyCount, threshold, newPartyCount, newThreshold int) *ReSharingParameters {
 	params := NewParameters(ec, ctx, partyID, partyCount, threshold)
+	// Apply the same mod-q distinctness check to the new committee. The
+	// new committee participates in VSS and Lagrange too, so a collision
+	// inside it would be just as fatal as one in the old committee.
+	if newCtx != nil {
+		assertDistinctIDsModQ(ec, newCtx.IDs())
+	}
 	return &ReSharingParameters{
 		Parameters:    params,
 		newParties:    newCtx,
 		newPartyCount: newPartyCount,
 		newThreshold:  newThreshold,
+	}
+}
+
+// assertDistinctIDsModQ panics if any two ids share the same `KeyInt() mod q`
+// residue, or if any single id reduces to 0 mod q.
+//
+// Mod-q collisions would later trigger a `ModInverse(0, q)` zero-divisor
+// panic deep inside signing / VSS reconstruction.
+//
+// A zero residue is fatal in a different way: in Shamir secret sharing
+// the polynomial is evaluated at the party's key, and f(0) is the
+// shared secret itself. A party with `KeyInt() mod q == 0` would,
+// post-Lagrange, either receive the raw secret as their share (if
+// keygen flowed through `vss.Create` directly without `CheckIndexes`)
+// or cause peer Lagrange coefficients to collapse to 0 / nil at
+// signing time (see `ecdsa/signing/prepare.go` `iota = ksc *
+// ModInverse(...)` — when `ksc mod q == 0`, `iota == 0`, and
+// `bigWj.ScalarMult(0)` returns nil, panicking on the next chained
+// op). vss.Create already rejects zero IDs via `CheckIndexes`, but
+// rejecting here as well gives a clear, locally-attributable error
+// and defends external direct-API consumers that bypass `vss.Create`
+// (e.g. loading legacy `LocalPartySaveData` and going straight to
+// signing).
+func assertDistinctIDsModQ(ec elliptic.Curve, ids []*PartyID) {
+	if ec == nil {
+		return
+	}
+	q := ec.Params().N
+	seen := make(map[string]string, len(ids))
+	for _, id := range ids {
+		if id == nil || id.KeyInt() == nil {
+			continue
+		}
+		residueBig := new(big.Int).Mod(id.KeyInt(), q)
+		if residueBig.Sign() == 0 {
+			panic(fmt.Errorf("NewParameters: party key %s is congruent to 0 mod q; this would reveal the Shamir secret as the party's share and would cause zero Lagrange coefficients at signing time",
+				id.KeyInt().Text(16)))
+		}
+		residue := residueBig.Text(16)
+		if prior, exists := seen[residue]; exists {
+			panic(fmt.Errorf("NewParameters: party keys %s and %s collide mod q (residue 0x%s); the Lagrange interpolation would hit a zero divisor at signing time",
+				prior, id.KeyInt().Text(16), residue))
+		}
+		seen[residue] = id.KeyInt().Text(16)
 	}
 }
 

@@ -11,12 +11,12 @@ import (
 	"errors"
 	"math/big"
 
-	"github.com/bnb-chain/tss-lib/v3/common"
-	"github.com/bnb-chain/tss-lib/v3/crypto"
-	cmts "github.com/bnb-chain/tss-lib/v3/crypto/commitments"
-	"github.com/bnb-chain/tss-lib/v3/crypto/dlnproof"
-	"github.com/bnb-chain/tss-lib/v3/crypto/vss"
-	"github.com/bnb-chain/tss-lib/v3/tss"
+	"github.com/bnb-chain/tss-lib/v4/common"
+	"github.com/bnb-chain/tss-lib/v4/crypto"
+	cmts "github.com/bnb-chain/tss-lib/v4/crypto/commitments"
+	"github.com/bnb-chain/tss-lib/v4/crypto/dlnproof"
+	"github.com/bnb-chain/tss-lib/v4/crypto/vss"
+	"github.com/bnb-chain/tss-lib/v4/tss"
 )
 
 var zero = big.NewInt(0)
@@ -96,10 +96,16 @@ func (round *round1) Start() *tss.Error {
 	// For keygen, all parties must agree on the nonce via external coordination
 	// (e.g., coordinator-assigned session ID) since no shared session-unique
 	// value is available within the protocol itself.
+	// Keygen has no protocol-internal session-unique value (unlike signing,
+	// which can fall back to the message hash). Require the caller to set
+	// a coordinator-assigned SessionNonce so each keygen run has a fresh
+	// SSID — preventing cross-session DLN/ModProof/FacProof replay.
 	if nonce := round.Params().SessionNonce(); nonce != nil {
 		round.temp.ssidNonce = new(big.Int).Set(nonce)
 	} else {
-		round.temp.ssidNonce = new(big.Int).SetUint64(0)
+		return round.WrapError(errors.New(
+			"keygen requires a session nonce; call Parameters.SetSessionNonce " +
+				"with a value agreed by all parties before starting the round"))
 	}
 	round.save.ShareID = ids[i]
 	round.temp.vs = vs

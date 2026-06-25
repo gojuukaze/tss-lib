@@ -10,12 +10,12 @@ import (
 	"fmt"
 	"math/big"
 
-	"github.com/bnb-chain/tss-lib/v3/common"
-	"github.com/bnb-chain/tss-lib/v3/crypto"
-	cmt "github.com/bnb-chain/tss-lib/v3/crypto/commitments"
-	"github.com/bnb-chain/tss-lib/v3/crypto/vss"
-	"github.com/bnb-chain/tss-lib/v3/eddsa/keygen"
-	"github.com/bnb-chain/tss-lib/v3/tss"
+	"github.com/bnb-chain/tss-lib/v4/common"
+	"github.com/bnb-chain/tss-lib/v4/crypto"
+	cmt "github.com/bnb-chain/tss-lib/v4/crypto/commitments"
+	"github.com/bnb-chain/tss-lib/v4/crypto/vss"
+	"github.com/bnb-chain/tss-lib/v4/eddsa/keygen"
+	"github.com/bnb-chain/tss-lib/v4/tss"
 )
 
 // Implements Party
@@ -139,18 +139,51 @@ func (p *LocalParty) StoreMessage(msg tss.ParsedMessage) (bool, *tss.Error) {
 	}
 	fromPIdx := msg.GetFrom().Index
 
-	// switch/case is necessary to store any messages beyond current round
-	// this does not handle message replays. we expect the caller to apply replay and spoofing protection.
+	// switch/case is necessary to store any messages beyond current round.
+	// Each branch rejects intra-session message replacement: once a slot is
+	// filled, a different-content message for it is rejected (idempotent
+	// identical re-sends are tolerated via tss.IsSameMessage).
+	//
+	// Resharing spans two independent, overlapping committee index spaces:
+	// old-committee-sourced slots (dgRound1Messages, dgRound3Message1s,
+	// dgRound3Message2s) are indexed by the sender's OLD index, new-sourced
+	// slots (dgRound2Messages, dgRound4Messages) by the sender's NEW index. A
+	// peer's index in one committee can numerically equal this party's index in
+	// the other, so p.PartyID().Index is NOT a safe self-echo discriminator: it
+	// would mis-read a colliding cross-committee peer as "self" and skip the
+	// duplicate guard. Detect our own echoes by sender IDENTITY (key) instead.
+	isDup := msg.GetFrom().KeyInt().Cmp(p.PartyID().KeyInt()) != 0
+
+	dupErr := func() (bool, *tss.Error) {
+		return false, p.WrapError(
+			fmt.Errorf("duplicate %T from party %d", msg.Content(), fromPIdx),
+			msg.GetFrom())
+	}
 	switch msg.Content().(type) {
 	case *DGRound1Message:
+		if isDup && p.temp.dgRound1Messages[fromPIdx] != nil && !tss.IsSameMessage(p.temp.dgRound1Messages[fromPIdx], msg) {
+			return dupErr()
+		}
 		p.temp.dgRound1Messages[fromPIdx] = msg
 	case *DGRound2Message:
+		if isDup && p.temp.dgRound2Messages[fromPIdx] != nil && !tss.IsSameMessage(p.temp.dgRound2Messages[fromPIdx], msg) {
+			return dupErr()
+		}
 		p.temp.dgRound2Messages[fromPIdx] = msg
 	case *DGRound3Message1:
+		if isDup && p.temp.dgRound3Message1s[fromPIdx] != nil && !tss.IsSameMessage(p.temp.dgRound3Message1s[fromPIdx], msg) {
+			return dupErr()
+		}
 		p.temp.dgRound3Message1s[fromPIdx] = msg
 	case *DGRound3Message2:
+		if isDup && p.temp.dgRound3Message2s[fromPIdx] != nil && !tss.IsSameMessage(p.temp.dgRound3Message2s[fromPIdx], msg) {
+			return dupErr()
+		}
 		p.temp.dgRound3Message2s[fromPIdx] = msg
 	case *DGRound4Message:
+		if isDup && p.temp.dgRound4Messages[fromPIdx] != nil && !tss.IsSameMessage(p.temp.dgRound4Messages[fromPIdx], msg) {
+			return dupErr()
+		}
 		p.temp.dgRound4Messages[fromPIdx] = msg
 	default: // unrecognised message, just ignore!
 		common.Logger.Warningf("unrecognised message ignored: %v", msg)

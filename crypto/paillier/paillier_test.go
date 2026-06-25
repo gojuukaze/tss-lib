@@ -15,10 +15,10 @@ import (
 
 	"github.com/stretchr/testify/assert"
 
-	"github.com/bnb-chain/tss-lib/v3/common"
-	"github.com/bnb-chain/tss-lib/v3/crypto"
-	. "github.com/bnb-chain/tss-lib/v3/crypto/paillier"
-	"github.com/bnb-chain/tss-lib/v3/tss"
+	"github.com/bnb-chain/tss-lib/v4/common"
+	"github.com/bnb-chain/tss-lib/v4/crypto"
+	. "github.com/bnb-chain/tss-lib/v4/crypto/paillier"
+	"github.com/bnb-chain/tss-lib/v4/tss"
 )
 
 // Using a modulus length of 2048 is recommended in the GG18 spec
@@ -169,6 +169,98 @@ func TestEncryptDecryptCT(t *testing.T) {
 	assert.NoError(t, err)
 	assert.Equal(t, 0, exp.Cmp(ret),
 		"CT decryption mismatch: got ", ret, " expected ", exp)
+}
+
+// TestProofVerifyRejectsPrimePkN demonstrates the Fermat trivial-pass:
+// for prime pkN, every xi ∈ Z_{pkN}* satisfies xi^pkN ≡ xi (mod pkN), so a
+// proof with pf[i] = xs[i] passes the iteration check without proving any
+// factorization. Verify must reject the modulus before that point.
+func TestProofVerifyRejectsPrimePkN(t *testing.T) {
+	ki := common.MustGetRandomInt(rand.Reader, 256)
+	ui := common.GetRandomPositiveInt(rand.Reader, tss.EC().Params().N)
+	yX, yY := tss.EC().ScalarBaseMult(ui.Bytes())
+	pub := crypto.NewECPointNoCurveCheck(tss.EC(), yX, yY)
+
+	primePkN := common.GetRandomPrimeInt(rand.Reader, 2048)
+	xs := GenerateXs(ProofIters, ki, primePkN, pub)
+	var forged Proof
+	for i := range forged {
+		forged[i] = new(big.Int).Mod(xs[i], primePkN)
+	}
+
+	res, err := forged.Verify(primePkN, ki, pub)
+	assert.NoError(t, err)
+	assert.False(t, res, "Verify must reject a prime pkN even when iteration equality would otherwise hold")
+}
+
+func TestProofVerifyRejectsMalformedInputs(t *testing.T) {
+	setUp(t)
+	ki := common.MustGetRandomInt(rand.Reader, 256)
+	ui := common.GetRandomPositiveInt(rand.Reader, tss.EC().Params().N)
+	yX, yY := tss.EC().ScalarBaseMult(ui.Bytes())
+	pub := crypto.NewECPointNoCurveCheck(tss.EC(), yX, yY)
+	good := privateKey.Proof(ki, pub)
+
+	t.Run("nil pkN", func(t *testing.T) {
+		res, err := good.Verify(nil, ki, pub)
+		assert.NoError(t, err)
+		assert.False(t, res)
+	})
+	t.Run("nil k", func(t *testing.T) {
+		res, err := good.Verify(publicKey.N, nil, pub)
+		assert.NoError(t, err)
+		assert.False(t, res)
+	})
+	t.Run("nil ecdsaPub", func(t *testing.T) {
+		res, err := good.Verify(publicKey.N, ki, nil)
+		assert.NoError(t, err)
+		assert.False(t, res)
+	})
+	t.Run("pkN too small", func(t *testing.T) {
+		small := big.NewInt(15) // 3*5, composite but tiny
+		res, err := good.Verify(small, ki, pub)
+		assert.NoError(t, err)
+		assert.False(t, res)
+	})
+	t.Run("pkN even", func(t *testing.T) {
+		even := new(big.Int).Lsh(publicKey.N, 1) // shift to make even, keep bit length
+		res, err := good.Verify(even, ki, pub)
+		assert.NoError(t, err)
+		assert.False(t, res)
+	})
+	t.Run("pf[i] nil", func(t *testing.T) {
+		var bad Proof
+		copy(bad[:], good[:])
+		bad[0] = nil
+		res, err := bad.Verify(publicKey.N, ki, pub)
+		assert.NoError(t, err)
+		assert.False(t, res)
+	})
+	t.Run("pf[i] zero", func(t *testing.T) {
+		var bad Proof
+		copy(bad[:], good[:])
+		bad[0] = big.NewInt(0)
+		res, err := bad.Verify(publicKey.N, ki, pub)
+		assert.NoError(t, err)
+		assert.False(t, res)
+	})
+	t.Run("pf[i] out of range", func(t *testing.T) {
+		var bad Proof
+		copy(bad[:], good[:])
+		bad[0] = new(big.Int).Add(publicKey.N, big.NewInt(1)) // > N
+		res, err := bad.Verify(publicKey.N, ki, pub)
+		assert.NoError(t, err)
+		assert.False(t, res)
+	})
+	t.Run("pf[i] non-unit", func(t *testing.T) {
+		var bad Proof
+		copy(bad[:], good[:])
+		// privateKey.P is a prime factor of publicKey.N, so gcd(P, N) = P > 1
+		bad[0] = new(big.Int).Set(privateKey.P)
+		res, err := bad.Verify(publicKey.N, ki, pub)
+		assert.NoError(t, err)
+		assert.False(t, res)
+	})
 }
 
 func TestProofVerifyCT(t *testing.T) {

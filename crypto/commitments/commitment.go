@@ -13,7 +13,7 @@ import (
 	"io"
 	"math/big"
 
-	"github.com/bnb-chain/tss-lib/v3/common"
+	"github.com/bnb-chain/tss-lib/v4/common"
 )
 
 const (
@@ -54,9 +54,21 @@ func NewHashDeCommitmentFromBytes(marshalled [][]byte) HashDeCommitment {
 }
 
 func (cmt *HashCommitDecommit) Verify() bool {
+	// Guard nil receiver explicitly: calling Verify on a typed-nil pointer
+	// previously panicked at `cmt.C` dereference.
+	if cmt == nil {
+		return false
+	}
 	C, D := cmt.C, cmt.D
 	if C == nil || D == nil {
 		return false
+	}
+	// common.SHA512_256i panics on nil *big.Int entries (unlike the
+	// _TAGGED variant). Reject malformed decommitments up-front.
+	for _, di := range D {
+		if di == nil {
+			return false
+		}
 	}
 	hash := common.SHA512_256i(D...)
 	return hash.Cmp(C) == 0

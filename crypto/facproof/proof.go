@@ -13,12 +13,28 @@ import (
 	"io"
 	"math/big"
 
-	"github.com/bnb-chain/tss-lib/v3/common"
+	"github.com/bnb-chain/tss-lib/v4/common"
 )
 
 const (
 	ProofFacBytesParts = 11
+	// verifyMinModulusBitLen matches the keygen wire-format check for
+	// Paillier N and NTilde (paillierBitsLen = 2048).
+	verifyMinModulusBitLen = 2048
+	// fsDomainTag is the Fiat-Shamir domain separator prepended to the
+	// caller-supplied Session for every challenge derivation in this
+	// package. Cross-proof transcript collisions are already statistically
+	// implausible because each proof type hashes a different arity of
+	// big.Int inputs (length-encoded by SHA512_256i_TAGGED), but explicit
+	// type tagging makes the domain separation visible and audit-friendly.
+	fsDomainTag = "tss-lib.v4.facproof"
 )
+
+// fsSession returns the per-proof-type tagged Session bytes. Wire-incompat
+// with v3 by design (v4 module bump consumes this break).
+func fsSession(Session []byte) []byte {
+	return append([]byte(fsDomainTag+"|"), Session...)
+}
 
 type (
 	ProofFac struct {
@@ -26,11 +42,13 @@ type (
 	}
 )
 
-var (
-	// rangeParameter l limits the bits of p or q to be in [1024-l, 1024+l]
-	rangeParameter = new(big.Int).Lsh(big.NewInt(1), 15)
-	one            = big.NewInt(1)
-)
+// NOTE: there is no explicit factor-size constant. The "no small factor"
+// guarantee is provided implicitly by the verifier's range check on Z1/Z2
+// against q³·√N0 (see Verify): combined with the third equality binding
+// N0p·N0q = N0 and a Fiat-Shamir challenge e ≈ 2²⁵⁶ (not grindable down to
+// admit a small factor), it forces both prime factors to be > ~2⁵¹². The
+// former `rangeParameter` constant (and an unused `one`) were dead code
+// (never referenced by Verify) and have been removed (SRC-2026-926 part B).
 
 // NewProof implements prooffac
 func NewProof(Session []byte, ec elliptic.Curve, N0, NCap, s, t, N0p, N0q *big.Int, rand io.Reader) (*ProofFac, error) {
@@ -92,8 +110,8 @@ func NewProof(Session []byte, ec elliptic.Curve, N0, NCap, s, t, N0p, N0q *big.I
 	// Fig 28.2 e
 	var e *big.Int
 	{
-		eHash := common.SHA512_256i_TAGGED(Session, N0, NCap, s, t, P, Q, A, B, T, sigma)
-		e = common.RejectionSample(q, eHash)
+		eHash := common.SHA512_256i_TAGGED(fsSession(Session), N0, NCap, s, t, P, Q, A, B, T, sigma)
+		e = common.ModReduceHash(q, eHash)
 	}
 
 	// Fig 28.3
@@ -142,8 +160,32 @@ func (pf *ProofFac) Verify(Session []byte, ec elliptic.Curve, N0, NCap, s, t *bi
 	if pf == nil || !pf.ValidateBasic() || ec == nil || N0 == nil || NCap == nil || s == nil || t == nil {
 		return false
 	}
-	if N0.Sign() != 1 {
+	// Both N0 (the Paillier modulus being attested) and NCap (the auxiliary
+	// safe-prime-product ring used by the proof's commitments) must be valid
+	// unknown-order moduli, otherwise modular operations downstream can
+	// degenerate or panic.
+	if !common.IsUsableUnknownOrderModulus(N0, verifyMinModulusBitLen) {
 		return false
+	}
+	if !common.IsUsableUnknownOrderModulus(NCap, verifyMinModulusBitLen) {
+		return false
+	}
+	// s, t are public generators of QR_{NCap}; require canonical
+	// non-trivial unit membership and distinctness.
+	if !common.IsCanonicalGenerator(NCap, s) || !common.IsCanonicalGenerator(NCap, t) {
+		return false
+	}
+	if s.Cmp(t) == 0 {
+		return false
+	}
+	// P, Q, A, B, T are prover-supplied commitments in Z_{NCap}* — the
+	// equality checks below take them as raw big integers, so without unit
+	// membership the prover can submit non-canonical or zero-divisor values
+	// that bypass the Σ-relation's binding property.
+	for _, v := range []*big.Int{pf.P, pf.Q, pf.A, pf.B, pf.T} {
+		if !common.IsNumberInMultiplicativeGroup(NCap, v) {
+			return false
+		}
 	}
 
 	q := ec.Params().N
@@ -151,20 +193,46 @@ func (pf *ProofFac) Verify(Session []byte, ec elliptic.Curve, N0, NCap, s, t *bi
 	q3 = new(big.Int).Mul(q, q3)
 	sqrtN0 := new(big.Int).Sqrt(N0)
 	q3SqrtN0 := new(big.Int).Mul(q3, sqrtN0)
+	qNCap := new(big.Int).Mul(q, NCap)
+	qN0NCap := new(big.Int).Mul(qNCap, N0)
+	q3NCap := new(big.Int).Mul(q3, NCap)
+	q3N0NCap := new(big.Int).Mul(q3NCap, N0)
+	upperW := new(big.Int).Lsh(q3NCap, 1)
+	upperV := new(big.Int).Lsh(q3N0NCap, 2)
 
-	// Fig 28. Range Check
-	if !common.IsInInterval(pf.Z1, q3SqrtN0) {
+	// Fig 28. Range Check. Use IsInIntervalPositive (not IsInInterval) so
+	// the lower bound is open: the honest prover samples all six values
+	// via GetRandomPositiveInt, so b == 0 is never produced by the spec.
+	if !common.IsInIntervalPositive(pf.Z1, q3SqrtN0) {
 		return false
 	}
 
-	if !common.IsInInterval(pf.Z2, q3SqrtN0) {
+	if !common.IsInIntervalPositive(pf.Z2, q3SqrtN0) {
+		return false
+	}
+	if !common.IsInIntervalPositive(pf.W1, upperW) {
+		return false
+	}
+	if !common.IsInIntervalPositive(pf.W2, upperW) {
+		return false
+	}
+	if !common.IsInIntervalPositive(pf.Sigma, qN0NCap) {
+		return false
+	}
+	if !common.IsInIntervalPositive(pf.V, upperV) {
 		return false
 	}
 
 	var e *big.Int
 	{
-		eHash := common.SHA512_256i_TAGGED(Session, N0, NCap, s, t, pf.P, pf.Q, pf.A, pf.B, pf.T, pf.Sigma)
-		e = common.RejectionSample(q, eHash)
+		eHash := common.SHA512_256i_TAGGED(fsSession(Session), N0, NCap, s, t, pf.P, pf.Q, pf.A, pf.B, pf.T, pf.Sigma)
+		e = common.ModReduceHash(q, eHash)
+	}
+	// Reject e == 0 for consistency with the Schnorr verifier. The
+	// probability is negligible under Fiat-Shamir, but a zero challenge
+	// trivially collapses the Σ relation's binding.
+	if e.Sign() == 0 {
+		return false
 	}
 
 	// Fig 28. Equality Check

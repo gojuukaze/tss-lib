@@ -28,14 +28,22 @@ import (
 
 	"github.com/otiai10/primes"
 
-	"github.com/bnb-chain/tss-lib/v3/common"
-	crypto2 "github.com/bnb-chain/tss-lib/v3/crypto"
+	"github.com/bnb-chain/tss-lib/v4/common"
+	crypto2 "github.com/bnb-chain/tss-lib/v4/crypto"
 )
 
 const (
 	ProofIters         = 13
 	verifyPrimesUntil  = 1000 // Verify uses primes <1000
 	pQBitLenDifference = 3    // >1020-bit P-Q
+	// Minimum Paillier modulus bit length accepted by Proof.Verify. Matches
+	// the GG18Spec recommendation and the paillierBitsLen used by the
+	// keygen/resharing wire-format checks.
+	verifyMinModulusBitLen = 2048
+	// Miller-Rabin rounds for the composite check below; 30 gives ≤4^-30
+	// false-positive rate against arbitrary composites — well below
+	// cryptographic concern thresholds.
+	verifyPrimalityRounds = 30
 )
 
 type (
@@ -50,7 +58,7 @@ type (
 		P, Q *big.Int
 
 		// cached M = N^(-1) mod PhiN, lazily computed
-		m    *big.Int
+		m     *big.Int
 		mOnce sync.Once
 	}
 
@@ -262,8 +270,57 @@ func (privateKey *PrivateKey) Proof(k *big.Int, ecdsaPub *crypto2.ECPoint) Proof
 	return pi
 }
 
+// Verify checks a Paillier modulus proof produced by PrivateKey.Proof.
+//
+// pkN is the public Paillier modulus; k is a session-binding value
+// (typically a PartyID key); ecdsaPub is the joint ECDSA public key from
+// keygen. ecdsaPub's curve is consulted only via ecdsaPub.ValidateBasic
+// (i.e. on-curve relative to the point's own stored curve). Callers that
+// reuse this verifier outside the keygen flow — where tss.EC() is the
+// implicit shared curve — should validate ecdsaPub.Curve() matches the
+// expected curve themselves before calling Verify.
 func (pf Proof) Verify(pkN, k *big.Int, ecdsaPub *crypto2.ECPoint) (bool, error) {
+	// Input validation. Done synchronously up-front so malformed inputs cannot
+	// reach GenerateXs (which dereferences k/ecdsaPub and would loop without a
+	// sane pkN bit length).
+	if pkN == nil || k == nil || ecdsaPub == nil || !ecdsaPub.ValidateBasic() {
+		return false, nil
+	}
+	// k is hashed via k.Bytes() inside GenerateXs, which returns the
+	// absolute value — distinct signed k inputs would alias to the same
+	// xi. Reject negative k so the caller never produces ambiguous
+	// transcripts.
+	if k.Sign() < 0 {
+		return false, nil
+	}
+	if pkN.Sign() != 1 || pkN.Bit(0) == 0 || pkN.BitLen() < verifyMinModulusBitLen {
+		return false, nil
+	}
+	// Reject prime pkN. By Fermat's little theorem, x^p ≡ x (mod p) for every
+	// x ∈ Z_p*, so a malicious prover with a prime modulus can set pf[i] = xi
+	// (the verifier-derived challenge) and pass every iteration without ever
+	// proving knowledge of a factorization. The trial-division goroutine below
+	// only catches primes/composites with factors < verifyPrimesUntil; this
+	// ProbablyPrime check closes the gap for larger primes.
+	if pkN.ProbablyPrime(verifyPrimalityRounds) {
+		return false, nil
+	}
 	iters := ProofIters
+	for i := 0; i < iters; i++ {
+		if pf[i] == nil {
+			return false, nil
+		}
+		// pf[i] must be a canonical unit in Z_{pkN}*. The iteration check
+		// pf[i]^pkN mod pkN otherwise has degenerate cases (pf[i]=0 makes
+		// both sides 0 when xi happens to vanish; non-unit pf[i] leaks
+		// gcd(pf[i], pkN) via the modexp).
+		if pf[i].Sign() != 1 || pf[i].Cmp(pkN) != -1 {
+			return false, nil
+		}
+		if new(big.Int).GCD(nil, nil, pf[i], pkN).Cmp(one) != 0 {
+			return false, nil
+		}
+	}
 	pch, xch := make(chan bool, 1), make(chan []*big.Int, 1) // buffered to allow early exit
 	prms := primes.Until(verifyPrimesUntil).List()           // uses cache primed in init()
 	go func(ch chan<- bool) {

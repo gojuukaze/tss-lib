@@ -13,10 +13,10 @@ import (
 	"io"
 	"math/big"
 
-	"github.com/bnb-chain/tss-lib/v3/common"
-	"github.com/bnb-chain/tss-lib/v3/crypto"
-	"github.com/bnb-chain/tss-lib/v3/crypto/paillier"
-	"github.com/bnb-chain/tss-lib/v3/tss"
+	"github.com/bnb-chain/tss-lib/v4/common"
+	"github.com/bnb-chain/tss-lib/v4/crypto"
+	"github.com/bnb-chain/tss-lib/v4/crypto/paillier"
+	"github.com/bnb-chain/tss-lib/v4/tss"
 )
 
 const (
@@ -122,11 +122,11 @@ func ProveBobWC(Session []byte, ec elliptic.Curve, pk *paillier.PublicKey, NTild
 		var eHash *big.Int
 		// X is nil if called by ProveBob (Bob's proof "without check")
 		if X == nil {
-			eHash = common.SHA512_256i_TAGGED(Session, append(pk.AsInts(), NTilde, h1, h2, c1, c2, z, zPrm, t, v, w)...)
+			eHash = common.SHA512_256i_TAGGED(fsSessionBob(Session), append(pk.AsInts(), NTilde, h1, h2, c1, c2, z, zPrm, t, v, w)...)
 		} else {
-			eHash = common.SHA512_256i_TAGGED(Session, append(pk.AsInts(), NTilde, h1, h2, X.X(), X.Y(), c1, c2, u.X(), u.Y(), z, zPrm, t, v, w)...)
+			eHash = common.SHA512_256i_TAGGED(fsSessionBobWC(Session), append(pk.AsInts(), NTilde, h1, h2, X.X(), X.Y(), c1, c2, u.X(), u.Y(), z, zPrm, t, v, w)...)
 		}
-		e = common.RejectionSample(q, eHash)
+		e = common.ModReduceHash(q, eHash)
 	}
 
 	// 13.
@@ -209,7 +209,29 @@ func ProofBobFromBytes(bzs [][]byte) (*ProofBob, error) {
 // ProveBobWC.Verify implements verification of Bob's proof with check "VerifyMtawc_Bob" used in the MtA protocol from GG18Spec (9) Fig. 10.
 // an absent `X` verifies a proof generated without the X consistency check X = g^x
 func (pf *ProofBobWC) Verify(Session []byte, ec elliptic.Curve, pk *paillier.PublicKey, NTilde, h1, h2, c1, c2 *big.Int, X *crypto.ECPoint) bool {
-	if pk == nil || NTilde == nil || h1 == nil || h2 == nil || c1 == nil || c2 == nil {
+	if pf == nil || pf.ProofBob == nil || !pf.ProofBob.ValidateBasic() || ec == nil || pk == nil || pk.N == nil || NTilde == nil || h1 == nil || h2 == nil || c1 == nil || c2 == nil {
+		return false
+	}
+	if X != nil && pf.U == nil {
+		return false
+	}
+	// pk.N and NTilde must be plausible unknown-order moduli before any
+	// modular arithmetic runs. NTilde and the public generators h1, h2
+	// arrive from the peer's keygen output, so the verifier must validate
+	// canonical-group shape rather than trust the upstream.
+	if !common.IsUsableUnknownOrderModulus(pk.N, verifyMinModulusBitLen) {
+		return false
+	}
+	if !common.IsUsableUnknownOrderModulus(NTilde, verifyMinModulusBitLen) {
+		return false
+	}
+	if !common.IsCanonicalGenerator(NTilde, h1) || !common.IsCanonicalGenerator(NTilde, h2) || h1.Cmp(h2) == 0 {
+		return false
+	}
+	// c1, c2 are Paillier ciphertexts from peers; reject non-canonical
+	// representations and any value sharing a factor with N (which would
+	// otherwise leak that factor through c^S1 mod N² or c^e mod N²).
+	if !common.IsCanonicalPaillierCiphertext(c1, pk.N) || !common.IsCanonicalPaillierCiphertext(c2, pk.N) {
 		return false
 	}
 
@@ -218,23 +240,25 @@ func (pf *ProofBobWC) Verify(Session []byte, ec elliptic.Curve, pk *paillier.Pub
 	q3 = new(big.Int).Mul(q, q3)   // q^3
 	q7 := new(big.Int).Mul(q3, q3) // q^6
 	q7 = new(big.Int).Mul(q7, q)   // q^7
+	upperS2T2 := new(big.Int).Mul(q3, NTilde)
+	upperS2T2.Lsh(upperS2T2, 1)
 
-	if !common.IsInInterval(pf.Z, NTilde) {
+	if !common.IsInIntervalPositive(pf.Z, NTilde) {
 		return false
 	}
-	if !common.IsInInterval(pf.ZPrm, NTilde) {
+	if !common.IsInIntervalPositive(pf.ZPrm, NTilde) {
 		return false
 	}
-	if !common.IsInInterval(pf.T, NTilde) {
+	if !common.IsInIntervalPositive(pf.T, NTilde) {
 		return false
 	}
-	if !common.IsInInterval(pf.V, pk.NSquare()) {
+	if !common.IsInIntervalPositive(pf.V, pk.NSquare()) {
 		return false
 	}
-	if !common.IsInInterval(pf.W, NTilde) {
+	if !common.IsInIntervalPositive(pf.W, NTilde) {
 		return false
 	}
-	if !common.IsInInterval(pf.S, pk.N) {
+	if !common.IsInIntervalPositive(pf.S, pk.N) {
 		return false
 	}
 	if new(big.Int).GCD(nil, nil, pf.Z, NTilde).Cmp(one) != 0 {
@@ -263,9 +287,8 @@ func (pf *ProofBobWC) Verify(Session []byte, ec elliptic.Curve, pk *paillier.Pub
 	if pf.V.Cmp(zero) == 0 {
 		return false
 	}
-	if gcd.GCD(nil, nil, pf.V, pk.N).Cmp(one) != 0 {
-		return false
-	}
+	// gcd(V, pk.N²) above (line ~273) already implies gcd(V, pk.N) since
+	// N and N² share the same prime factors; no redundant check here.
 	if pf.S1.Cmp(q) == -1 {
 		return false
 	}
@@ -276,6 +299,12 @@ func (pf *ProofBobWC) Verify(Session []byte, ec elliptic.Curve, pk *paillier.Pub
 		return false
 	}
 	if pf.T2.Cmp(q) == -1 {
+		return false
+	}
+	if pf.S2.Cmp(upperS2T2) >= 0 {
+		return false
+	}
+	if pf.T2.Cmp(upperS2T2) >= 0 {
 		return false
 	}
 
@@ -293,24 +322,44 @@ func (pf *ProofBobWC) Verify(Session []byte, ec elliptic.Curve, pk *paillier.Pub
 		var eHash *big.Int
 		// X is nil if called on a ProveBob (Bob's proof "without check")
 		if X == nil {
-			eHash = common.SHA512_256i_TAGGED(Session, append(pk.AsInts(), NTilde, h1, h2, c1, c2, pf.Z, pf.ZPrm, pf.T, pf.V, pf.W)...)
+			eHash = common.SHA512_256i_TAGGED(fsSessionBob(Session), append(pk.AsInts(), NTilde, h1, h2, c1, c2, pf.Z, pf.ZPrm, pf.T, pf.V, pf.W)...)
 		} else {
 			if !tss.SameCurve(ec, X.Curve()) {
 				return false
 			}
-			eHash = common.SHA512_256i_TAGGED(Session, append(pk.AsInts(), NTilde, h1, h2, X.X(), X.Y(), c1, c2, pf.U.X(), pf.U.Y(), pf.Z, pf.ZPrm, pf.T, pf.V, pf.W)...)
+			eHash = common.SHA512_256i_TAGGED(fsSessionBobWC(Session), append(pk.AsInts(), NTilde, h1, h2, X.X(), X.Y(), c1, c2, pf.U.X(), pf.U.Y(), pf.Z, pf.ZPrm, pf.T, pf.V, pf.W)...)
 		}
-		e = common.RejectionSample(q, eHash)
+		e = common.ModReduceHash(q, eHash)
+	}
+	// Reject e == 0 for both with-check and without-check variants.
+	// Negligible under Fiat-Shamir but a zero challenge collapses the Σ
+	// relation binding, and consistency with Schnorr / RangeProofAlice
+	// keeps the rejection policy uniform across the repo.
+	if e.Sign() == 0 {
+		return false
 	}
 
 	var left, right *big.Int // for the following conditionals
 
 	// 4. runs only in the "with check" mode from Fig. 10
 	if X != nil {
+		// ValidateInSubgroup: same as ValidateBasic plus prime-order
+		// subgroup membership on composite-cofactor curves. pf.U is
+		// usually validated by the deserialization path's NewECPoint,
+		// but direct API consumers can bypass that — keep the explicit
+		// check here. Same-curve guards against cross-curve mixing
+		// via NewECPointNoCurveCheck.
+		if !X.ValidateInSubgroup() || !pf.U.ValidateInSubgroup() || !tss.SameCurve(ec, pf.U.Curve()) {
+			return false
+		}
 		s1ModQ := new(big.Int).Mod(pf.S1, ec.Params().N)
 		gS1 := crypto.ScalarBaseMult(ec, s1ModQ)
-		xEU, err := X.ScalarMult(e).Add(pf.U)
-		if err != nil || !gS1.Equals(xEU) {
+		xE := X.ScalarMult(e)
+		if xE == nil {
+			return false
+		}
+		xEU, err := xE.Add(pf.U)
+		if err != nil || gS1 == nil || !gS1.Equals(xEU) {
 			return false
 		}
 	}
@@ -368,7 +417,8 @@ func (pf *ProofBob) Verify(Session []byte, ec elliptic.Curve, pk *paillier.Publi
 }
 
 func (pf *ProofBob) ValidateBasic() bool {
-	return pf.Z != nil &&
+	return pf != nil &&
+		pf.Z != nil &&
 		pf.ZPrm != nil &&
 		pf.T != nil &&
 		pf.V != nil &&
@@ -381,7 +431,7 @@ func (pf *ProofBob) ValidateBasic() bool {
 }
 
 func (pf *ProofBobWC) ValidateBasic() bool {
-	return pf.ProofBob.ValidateBasic() && pf.U != nil
+	return pf != nil && pf.ProofBob != nil && pf.ProofBob.ValidateBasic() && pf.U != nil
 }
 
 func (pf *ProofBob) Bytes() [ProofBobBytesParts][]byte {

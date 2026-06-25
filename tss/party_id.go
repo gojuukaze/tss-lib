@@ -12,7 +12,7 @@ import (
 	"math/big"
 	"sort"
 
-	"github.com/bnb-chain/tss-lib/v3/common"
+	"github.com/bnb-chain/tss-lib/v4/common"
 )
 
 type (
@@ -60,8 +60,21 @@ func (pid PartyID) String() string {
 // ----- //
 
 // SortPartyIDs sorts a list of []*PartyID by their keys in ascending order
-// Exported, used in `tss` client
+// Exported, used in `tss` client. Panics if two parties share the same key
+// — the Schnorr / range-proof session-binding scheme assumes pairwise-distinct
+// keys, and a duplicate would compromise the sort.Interface contract.
 func SortPartyIDs(ids UnSortedPartyIDs, startAt ...int) SortedPartyIDs {
+	seen := make(map[string]struct{}, len(ids))
+	for _, id := range ids {
+		if id == nil || id.KeyInt() == nil {
+			panic(fmt.Errorf("SortPartyIDs: nil PartyID or nil key"))
+		}
+		keyHex := id.KeyInt().Text(16)
+		if _, exists := seen[keyHex]; exists {
+			panic(fmt.Errorf("SortPartyIDs: duplicate party key detected: %s", keyHex))
+		}
+		seen[keyHex] = struct{}{}
+	}
 	sorted := make(SortedPartyIDs, 0, len(ids))
 	for _, id := range ids {
 		sorted = append(sorted, id)
@@ -140,8 +153,11 @@ func (spids SortedPartyIDs) Len() int {
 	return len(spids)
 }
 
+// Less reports whether party a should sort before party b. The comparator
+// uses strict less-than to satisfy Go's sort.Interface strict-weak-ordering
+// contract.
 func (spids SortedPartyIDs) Less(a, b int) bool {
-	return spids[a].KeyInt().Cmp(spids[b].KeyInt()) <= 0
+	return spids[a].KeyInt().Cmp(spids[b].KeyInt()) < 0
 }
 
 func (spids SortedPartyIDs) Swap(a, b int) {

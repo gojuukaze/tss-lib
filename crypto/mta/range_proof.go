@@ -13,13 +13,33 @@ import (
 	"io"
 	"math/big"
 
-	"github.com/bnb-chain/tss-lib/v3/common"
-	"github.com/bnb-chain/tss-lib/v3/crypto/paillier"
+	"github.com/bnb-chain/tss-lib/v4/common"
+	"github.com/bnb-chain/tss-lib/v4/crypto/paillier"
 )
 
 const (
 	RangeProofAliceBytesParts = 6
+	// verifyMinModulusBitLen matches the keygen wire-format check for
+	// Paillier N and NTilde (paillierBitsLen = 2048).
+	verifyMinModulusBitLen = 2048
+	// fsDomainTag* are per-proof-type Fiat-Shamir domain separators
+	// (see facproof.fsSession docstring for rationale).
+	fsDomainTagRangeAlice = "tss-lib.v4.mta.range-alice"
+	fsDomainTagBob        = "tss-lib.v4.mta.bob"
+	fsDomainTagBobWC      = "tss-lib.v4.mta.bob-wc"
 )
+
+func fsSessionRangeAlice(Session []byte) []byte {
+	return append([]byte(fsDomainTagRangeAlice+"|"), Session...)
+}
+
+func fsSessionBob(Session []byte) []byte {
+	return append([]byte(fsDomainTagBob+"|"), Session...)
+}
+
+func fsSessionBobWC(Session []byte) []byte {
+	return append([]byte(fsDomainTagBobWC+"|"), Session...)
+}
 
 var (
 	zero = big.NewInt(0)
@@ -80,8 +100,8 @@ func ProveRangeAlice(Session []byte, ec elliptic.Curve, pk *paillier.PublicKey, 
 	// 8-9. e'
 	var e *big.Int
 	{ // must use RejectionSample
-		eHash := common.SHA512_256i_TAGGED(Session, append(pk.AsInts(), NTilde, h1, h2, c, z, u, w)...)
-		e = common.RejectionSample(q, eHash)
+		eHash := common.SHA512_256i_TAGGED(fsSessionRangeAlice(Session), append(pk.AsInts(), NTilde, h1, h2, c, z, u, w)...)
+		e = common.ModReduceHash(q, eHash)
 	}
 
 	modN := common.ModInt(pk.N)
@@ -114,30 +134,48 @@ func RangeProofAliceFromBytes(bzs [][]byte) (*RangeProofAlice, error) {
 }
 
 func (pf *RangeProofAlice) Verify(Session []byte, ec elliptic.Curve, pk *paillier.PublicKey, NTilde, h1, h2, c *big.Int) bool {
-	if pf == nil || !pf.ValidateBasic() || pk == nil || NTilde == nil || h1 == nil || h2 == nil || c == nil {
+	if pf == nil || !pf.ValidateBasic() || ec == nil || pk == nil || pk.N == nil || NTilde == nil || h1 == nil || h2 == nil || c == nil {
 		return false
 	}
-	// Reject c where gcd(c, N) != 1 to prevent nil pointer dereference from c^(-e) in modular exponentiation.
-	// When gcd(c, N) != 1, the modular inverse doesn't exist and big.Int.Exp returns nil.
-	// This also covers the c == 0 case.
-	if new(big.Int).GCD(nil, nil, c, pk.N).Cmp(one) != 0 {
+	// pk.N and NTilde must both be plausible unknown-order moduli before any
+	// modular arithmetic runs (prevents prime / undersized / even / nil
+	// moduli from making downstream operations panic or trivially pass).
+	if !common.IsUsableUnknownOrderModulus(pk.N, verifyMinModulusBitLen) {
+		return false
+	}
+	if !common.IsUsableUnknownOrderModulus(NTilde, verifyMinModulusBitLen) {
+		return false
+	}
+	// h1, h2 are public NTilde generators agreed in keygen; require canonical
+	// non-trivial unit membership and distinctness.
+	if !common.IsCanonicalGenerator(NTilde, h1) || !common.IsCanonicalGenerator(NTilde, h2) || h1.Cmp(h2) == 0 {
+		return false
+	}
+	// c is the Paillier ciphertext from the peer. Require canonical
+	// encoding (in (0, N²)) and gcd(c, N) == 1 — the latter prevents
+	// c^(-e) mod N² from returning nil when the modular inverse doesn't
+	// exist; the former rejects non-canonical c + k·N² that could leak
+	// timing differences or bypass downstream invariants.
+	if !common.IsCanonicalPaillierCiphertext(c, pk.N) {
 		return false
 	}
 
 	q := ec.Params().N
 	q3 := new(big.Int).Mul(q, q)
 	q3 = new(big.Int).Mul(q, q3)
+	upperS2 := new(big.Int).Mul(q3, NTilde)
+	upperS2.Lsh(upperS2, 1)
 
-	if !common.IsInInterval(pf.Z, NTilde) {
+	if !common.IsInIntervalPositive(pf.Z, NTilde) {
 		return false
 	}
-	if !common.IsInInterval(pf.U, pk.NSquare()) {
+	if !common.IsInIntervalPositive(pf.U, pk.NSquare()) {
 		return false
 	}
-	if !common.IsInInterval(pf.W, NTilde) {
+	if !common.IsInIntervalPositive(pf.W, NTilde) {
 		return false
 	}
-	if !common.IsInInterval(pf.S, pk.N) {
+	if !common.IsInIntervalPositive(pf.S, pk.N) {
 		return false
 	}
 	if new(big.Int).GCD(nil, nil, pf.Z, NTilde).Cmp(one) != 0 {
@@ -149,10 +187,20 @@ func (pf *RangeProofAlice) Verify(Session []byte, ec elliptic.Curve, pk *paillie
 	if new(big.Int).GCD(nil, nil, pf.W, NTilde).Cmp(one) != 0 {
 		return false
 	}
+	// Mirror of the ProofBob/WC.Verify gcd(S, N) check. Honest S = r^e ·
+	// beta mod N is a unit (beta is sampled coprime to N, r is in Z_N*);
+	// reject the non-unit case directly rather than relying on downstream
+	// equality checks to catch it.
+	if new(big.Int).GCD(nil, nil, pf.S, pk.N).Cmp(one) != 0 {
+		return false
+	}
 	if pf.S1.Cmp(q) == -1 {
 		return false
 	}
 	if pf.S2.Cmp(q) == -1 {
+		return false
+	}
+	if pf.S2.Cmp(upperS2) >= 0 {
 		return false
 	}
 	if pf.S.Cmp(one) == 0 {
@@ -173,8 +221,13 @@ func (pf *RangeProofAlice) Verify(Session []byte, ec elliptic.Curve, pk *paillie
 	// 1-2. e'
 	var e *big.Int
 	{ // must use RejectionSample
-		eHash := common.SHA512_256i_TAGGED(Session, append(pk.AsInts(), NTilde, h1, h2, c, pf.Z, pf.U, pf.W)...)
-		e = common.RejectionSample(q, eHash)
+		eHash := common.SHA512_256i_TAGGED(fsSessionRangeAlice(Session), append(pk.AsInts(), NTilde, h1, h2, c, pf.Z, pf.U, pf.W)...)
+		e = common.ModReduceHash(q, eHash)
+	}
+	// Reject e == 0 for consistency with Schnorr / ProofBobWC. Negligible
+	// under Fiat-Shamir but a zero challenge collapses the Σ relation.
+	if e.Sign() == 0 {
+		return false
 	}
 
 	var products *big.Int // for the following conditionals
