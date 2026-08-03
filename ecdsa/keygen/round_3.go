@@ -126,21 +126,19 @@ func (round *round3) Start() *tss.Error {
 				ch <- vssOut{errors.New("vss verify failed"), nil}
 				return
 			}
+			// FacProof verification is mandatory — the legacy "old parties may
+			// not send a facProof" bypass (NoProofFac) was removed alongside
+			// NoProofMod (SRC-2026-926). It is not redundant with the ModProof
+			// verified above: the two cover different properties of the modulus.
 			facProof, err := r2msg1.UnmarshalFacProof()
-			if err != nil && round.NoProofFac() {
-				// For old parties, the facProof could be not exist
-				// Not return error for compatibility reason
-				common.Logger.Warningf("facProof not exist:%s", Ps[j])
-			} else {
-				if err != nil {
-					ch <- vssOut{errors.New("facProof verify failed"), nil}
-					return
-				}
-				if ok = facProof.Verify(ContextJ, round.EC(), round.save.PaillierPKs[j].N, round.save.NTildei,
-					round.save.H1i, round.save.H2i); !ok {
-					ch <- vssOut{errors.New("facProof verify failed"), nil}
-					return
-				}
+			if err != nil {
+				ch <- vssOut{errors.New("facProof verify failed"), nil}
+				return
+			}
+			if ok = facProof.Verify(ContextJ, round.EC(), round.save.PaillierPKs[j].N, round.save.NTildei,
+				round.save.H1i, round.save.H2i); !ok {
+				ch <- vssOut{errors.New("facProof verify failed"), nil}
+				return
 			}
 
 			// (9) handled above

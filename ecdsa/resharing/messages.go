@@ -310,9 +310,11 @@ func NewDGRound4Message1(
 }
 
 func (m *DGRound4Message1) ValidateBasic() bool {
-	return m != nil
-	// use with NoProofFac()
-	// && common.NonEmptyMultiBytes(m.GetFacProof(), facproof.ProofFacBytesParts)
+	// FacProof is now always generated (the NoProofFac compatibility switch was
+	// removed), so a message without one is malformed and can be rejected here
+	// rather than failing later in round 5.
+	return m != nil &&
+		common.NonEmptyMultiBytes(m.GetFacProof(), facproof.ProofFacBytesParts)
 }
 
 func (m *DGRound4Message1) UnmarshalFacProof() (*facproof.ProofFac, error) {

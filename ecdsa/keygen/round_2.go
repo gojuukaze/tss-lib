@@ -114,18 +114,13 @@ func (round *round2) Start() *tss.Error {
 	ContextI := append(round.temp.ssid, big.NewInt(int64(i)).Bytes()...)
 	for j, Pj := range round.Parties().IDs() {
 
-		facProof := &facproof.ProofFac{
-			P: zero, Q: zero, A: zero, B: zero, T: zero, Sigma: zero,
-			Z1: zero, Z2: zero, W1: zero, W2: zero, V: zero,
-		}
-		if !round.Params().NoProofFac() {
-			var err error
-			facProof, err = facproof.NewProof(ContextI, round.EC(), round.save.PaillierSK.N, round.save.NTildej[j],
-				round.save.H1j[j], round.save.H2j[j], round.save.PaillierSK.P, round.save.PaillierSK.Q, round.Rand())
-			if err != nil {
-				return round.WrapError(err, round.PartyID())
-			}
-
+		// FacProof generation is unconditional — the NoProofFac compatibility
+		// switch was removed alongside NoProofMod (SRC-2026-926). The zero-filled
+		// placeholder proof is gone; every peer receives a real proof.
+		facProof, err := facproof.NewProof(ContextI, round.EC(), round.save.PaillierSK.N, round.save.NTildej[j],
+			round.save.H1j[j], round.save.H2j[j], round.save.PaillierSK.P, round.save.PaillierSK.Q, round.Rand())
+		if err != nil {
+			return round.WrapError(err, round.PartyID())
 		}
 		r2msg1 := NewKGRound2Message1(Pj, round.PartyID(), shares[j], facProof)
 		// do not send to this Pj, but store for round 3

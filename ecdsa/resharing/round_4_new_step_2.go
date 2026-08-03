@@ -249,16 +249,12 @@ func (round *round4) Start() *tss.Error {
 			continue
 		}
 		ContextJ := common.AppendBigIntToBytesSlice(round.temp.ssid, big.NewInt(int64(j)))
-		facProof := &facproof.ProofFac{
-			P: zero, Q: zero, A: zero, B: zero, T: zero, Sigma: zero,
-			Z1: zero, Z2: zero, W1: zero, W2: zero, V: zero,
-		}
-		if !round.Parameters.NoProofFac() {
-			facProof, err = facproof.NewProof(ContextJ, round.EC(), round.save.PaillierSK.N, round.save.NTildej[j],
-				round.save.H1j[j], round.save.H2j[j], round.save.PaillierSK.P, round.save.PaillierSK.Q, round.Rand())
-			if err != nil {
-				return round.WrapError(err, Pi)
-			}
+		// FacProof generation is unconditional — the NoProofFac compatibility
+		// switch was removed alongside NoProofMod (SRC-2026-926).
+		facProof, err := facproof.NewProof(ContextJ, round.EC(), round.save.PaillierSK.N, round.save.NTildej[j],
+			round.save.H1j[j], round.save.H2j[j], round.save.PaillierSK.P, round.save.PaillierSK.Q, round.Rand())
+		if err != nil {
+			return round.WrapError(err, Pi)
 		}
 		r4msg1 := NewDGRound4Message1(Pj, Pi, facProof)
 		round.out <- r4msg1

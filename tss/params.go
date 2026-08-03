@@ -14,8 +14,6 @@ import (
 	"math/big"
 	"runtime"
 	"time"
-
-	"github.com/bnb-chain/tss-lib/v4/common"
 )
 
 type (
@@ -33,14 +31,14 @@ type (
 		// all parties (e.g., a coordinator-assigned session ID) to prevent cross-session
 		// proof replay. If not set, falls back to 0 (no session binding).
 		sessionNonce *big.Int
-		// for legacy keygen/resharing compatibility only. This flag weakens
-		// proof verification and should not be enabled in production.
-		// NOTE: the former noProofMod flag was removed (SRC-2026-926) —
-		// Paillier and NTilde ModProof verification is now mandatory, because
-		// ModProof is the only check that proves a peer's modulus is a true
-		// biprime (no small factors), without which a smooth/factorable
-		// modulus enables full MtA key-share extraction.
-		noProofFac bool
+		// NOTE: the former noProofMod and noProofFac legacy-compatibility flags
+		// have both been removed — ModProof (SRC-2026-926) and FacProof are now
+		// verified unconditionally in keygen and resharing.
+		//
+		// The two proofs are not interchangeable, which is why neither may be
+		// skipped: they attest to different properties of a peer's modulus and
+		// neither implies the other. See crypto/facproof and crypto/modproof
+		// for the scope of each.
 		// random sources
 		partialKeyRand, rand io.Reader
 	}
@@ -134,15 +132,6 @@ func (params *Parameters) SetConcurrency(concurrency int) {
 
 func (params *Parameters) SetSafePrimeGenTimeout(timeout time.Duration) {
 	params.safePrimeGenTimeout = timeout
-}
-
-func (params *Parameters) NoProofFac() bool {
-	return params.noProofFac
-}
-
-func (params *Parameters) SetNoProofFac() {
-	common.Logger.Warningf("SetNoProofFac enables legacy compatibility mode and weakens proof verification; do not use in production")
-	params.noProofFac = true
 }
 
 func (params *Parameters) PartialKeyRand() io.Reader {

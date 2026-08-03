@@ -18,8 +18,6 @@ import (
 	"github.com/bnb-chain/tss-lib/v4/tss"
 )
 
-var zero = big.NewInt(0)
-
 func (round *round2) Start() *tss.Error {
 	if round.started {
 		return round.WrapError(errors.New("round already started"))
