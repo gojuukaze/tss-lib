@@ -26,7 +26,42 @@ var (
 		200*time.Millisecond, // Target duration for Paillier decrypt operations
 		20*time.Millisecond,  // Jitter range
 	)
+
+	// errMtAShareVerification is the single error returned by AliceEnd and
+	// AliceEndWC for every rejection: an invalid range proof, a failed
+	// decryption, or a plaintext outside the expected output range.
+	//
+	// Rejections are deliberately indistinguishable to the peer. The specific
+	// cause goes to the local debug log; the returned value carries no
+	// distinguishing information, and callers fold it into a single round-level
+	// error.
+	errMtAShareVerification = errors.New("mta: share verification failed")
 )
+
+// alphaPrmInRange reports whether a decrypted MtA plaintext lies within the
+// range a protocol-conforming counterparty can produce, [0, q^6).
+//
+// The range proofs verified beforehand bound the magnitude of the prover's
+// responses, which is not the same as bounding the value that comes back out of
+// the decryption, so the output is checked directly.
+//
+// The window has ample margin: a conforming run yields
+// alphaPrm = a*b + betaPrm < q^4 + q^5 < q^6 (1536 bits), while the Paillier
+// modulus is at least 2^2047. The cut may sit anywhere in the ~768-bit gap
+// between those two, so it is not sensitive to the exact exponent.
+//
+// The check is applied at both AliceEnd and AliceEndWC, which are reached from
+// different call sites and must be treated independently. It is made on the
+// decrypted plaintext rather than on the individual proof witnesses because the
+// plaintext is the value actually consumed downstream: one check there covers
+// every route by which it can be formed.
+func alphaPrmInRange(alphaPrm, q *big.Int) bool {
+	if alphaPrm.Sign() < 0 {
+		return false
+	}
+	q6 := new(big.Int).Exp(q, big.NewInt(6), nil)
+	return alphaPrm.Cmp(q6) < 0
+}
 
 func AliceInit(
 	Session []byte,
@@ -126,21 +161,35 @@ func AliceEnd(
 	sk *paillier.PrivateKey,
 ) (*big.Int, error) {
 	if !pf.Verify(Session, ec, pkA, NTildeA, h1A, h2A, cA, cB) {
-		return nil, errors.New("ProofBob.Verify() returned false")
+		common.Logger.Debugf("mta: AliceEnd rejected: ProofBob.Verify() returned false")
+		return nil, errMtAShareVerification
 	}
+
+	q := ec.Params().N
 
 	// Timing protection runs unconditionally so Paillier Decrypt's response
 	// time is normalised regardless of whether the constant-time exponent
 	// path is in use; the padding is the primary side-channel mitigation
 	// and must not depend on caller opt-in.
+	//
+	// The range check runs inside the protected closure so the rejecting path is
+	// padded to the same target duration as the accepting one.
 	alphaPrm, err := mtaTimingProtection.ProtectBigInt(func() (*big.Int, error) {
-		return sk.Decrypt(cB)
+		pt, err := sk.Decrypt(cB)
+		if err != nil {
+			common.Logger.Debugf("mta: AliceEnd rejected: Paillier decrypt failed: %v", err)
+			return nil, errMtAShareVerification
+		}
+		if !alphaPrmInRange(pt, q) {
+			common.Logger.Debugf("mta: AliceEnd rejected: decrypted share outside the expected range")
+			return nil, errMtAShareVerification
+		}
+		return pt, nil
 	})
 	if err != nil {
 		return nil, err
 	}
 
-	q := ec.Params().N
 	return new(big.Int).Mod(alphaPrm, q), nil
 }
 
@@ -154,20 +203,34 @@ func AliceEndWC(
 	sk *paillier.PrivateKey,
 ) (*big.Int, error) {
 	if !pf.Verify(Session, ec, pkA, NTildeA, h1A, h2A, cA, cB, B) {
-		return nil, errors.New("ProofBobWC.Verify() returned false")
+		common.Logger.Debugf("mta: AliceEndWC rejected: ProofBobWC.Verify() returned false")
+		return nil, errMtAShareVerification
 	}
+
+	q := ec.Params().N
 
 	// Timing protection runs unconditionally so Paillier Decrypt's response
 	// time is normalised regardless of whether the constant-time exponent
 	// path is in use; the padding is the primary side-channel mitigation
 	// and must not depend on caller opt-in.
+	//
+	// The range check runs inside the protected closure so the rejecting path is
+	// padded to the same target duration as the accepting one.
 	alphaPrm, err := mtaTimingProtection.ProtectBigInt(func() (*big.Int, error) {
-		return sk.Decrypt(cB)
+		pt, err := sk.Decrypt(cB)
+		if err != nil {
+			common.Logger.Debugf("mta: AliceEndWC rejected: Paillier decrypt failed: %v", err)
+			return nil, errMtAShareVerification
+		}
+		if !alphaPrmInRange(pt, q) {
+			common.Logger.Debugf("mta: AliceEndWC rejected: decrypted share outside the expected range")
+			return nil, errMtAShareVerification
+		}
+		return pt, nil
 	})
 	if err != nil {
 		return nil, err
 	}
 
-	q := ec.Params().N
 	return new(big.Int).Mod(alphaPrm, q), nil
 }
