@@ -106,12 +106,25 @@ type DGRound2Message1 struct {
 	H2         []byte                 `protobuf:"bytes,5,opt,name=h2,proto3" json:"h2,omitempty"`
 	Dlnproof_1 [][]byte               `protobuf:"bytes,6,rep,name=dlnproof_1,json=dlnproof1,proto3" json:"dlnproof_1,omitempty"`
 	Dlnproof_2 [][]byte               `protobuf:"bytes,7,rep,name=dlnproof_2,json=dlnproof2,proto3" json:"dlnproof_2,omitempty"`
-	// ModProof attesting that n_tilde is a Blum integer (product of two
-	// safe primes). Added in v4 to close the smooth-subgroup NTilde
-	// injection path that DLN proofs alone cannot detect.
-	// Empty when generator party ran with NoProofMod() compat mode; the
-	// verifier treats an unparseable proof as a warn-only fallback under
-	// NoProofMod(), or as a hard reject otherwise.
+	// ModProof over n_tilde. SCOPE: the verifier is
+	// ProofMod.Verify(Session, N) (crypto/modproof/proof.go#Verify), whose only
+	// statement input is the modulus, so this proof attests properties of
+	// n_tilde alone (Blum-integer shape). It does NOT attest that n_tilde is
+	// a product of safe primes: safe-primality is a property of n_tilde's two
+	// prime factors — for each factor f, that (f-1)/2 is prime — and those
+	// factors never enter Verify, which receives only their product. It
+	// constrains neither h1 nor h2 either. <h1> == <h2> is established by the
+	// two-directional DLN proof pair in dlnproof_1 / dlnproof_2 above —
+	// dlnproof.Proof.Verify(Session, h1, h2, N) (crypto/dlnproof/proof.go#Verify)
+	// — verified at ecdsa/resharing/round_4_new_step_2.go#Start, by the
+	// VerifyDLNProof1 and VerifyDLNProof2 calls.
+	// Not optional: since v4 the NoProofMod() compatibility switch and its
+	// warn-only fallback no longer exist (deleted in c487b67). A missing,
+	// unparseable or failing proof makes the sender a culprit
+	// (ecdsa/resharing/round_4_new_step_2.go#Start, at the
+	// UnmarshalNTildeModProof / nTildeModProof.Verify branches) and aborts the
+	// round (ecdsa/resharing/round_4_new_step_2.go#Start, at the culprit loop
+	// returning WrapError).
 	NTildeModProof [][]byte `protobuf:"bytes,8,rep,name=nTildeModProof,proto3" json:"nTildeModProof,omitempty"`
 	unknownFields  protoimpl.UnknownFields
 	sizeCache      protoimpl.SizeCache

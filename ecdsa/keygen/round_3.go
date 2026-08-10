@@ -103,10 +103,22 @@ func (round *round3) Start() *tss.Error {
 				ch <- vssOut{errors.New("modProof verify failed"), nil}
 				return
 			}
-			// Verify the ModProof for the peer's NTilde. The proof attests
-			// NTildej is a Blum-integer product of safe primes — closes the
-			// smooth-subgroup NTilde injection path that the 2048-bit BitLen
-			// check cannot detect. Also mandatory.
+			// Verify the ModProof for the peer's NTilde. Also mandatory.
+			// SCOPE: the verifier is ProofMod.Verify(Session, N)
+			// (crypto/modproof/proof.go#Verify), whose only statement input is
+			// the modulus, so this attests properties of NTildej alone
+			// (Blum-integer shape). It does NOT attest that NTildej is a
+			// product of safe primes: safe-primality is a property of
+			// NTildej's two prime factors — for each factor f, that (f-1)/2
+			// is prime — and those factors never enter Verify, which receives
+			// only their product. It therefore does not by itself exclude an
+			// NTildej whose multiplicative group has smooth order, and it
+			// constrains neither h1 nor h2, which are not its inputs. For the
+			// peer's ring, <h1> == <h2> is established by the two-directional
+			// DLN proof pair instead — dlnproof.Proof.Verify(Session, h1, h2,
+			// N) (crypto/dlnproof/proof.go#Verify) — verified in
+			// round_2.go#Start, by the VerifyDLNProof1 and VerifyDLNProof2
+			// calls.
 			nTildeModProof, err := r2msg2.UnmarshalNTildeModProof()
 			if err != nil {
 				ch <- vssOut{errors.New("nTildeModProof verify failed"), nil}

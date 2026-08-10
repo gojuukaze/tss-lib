@@ -208,10 +208,19 @@ func (m *KGRound2Message2) UnmarshalModProof() (*modproof.ProofMod, error) {
 	return modproof.NewProofFromBytes(m.GetModProof())
 }
 
-// UnmarshalNTildeModProof returns the ModProof attesting that the peer's
-// NTilde is a Blum integer (square-free product of safe primes). Returns an
-// error if the peer shipped no/invalid proof; round_3.go treats that as a
-// hard reject (SRC-2026-926 — the NoProofMod fallback was removed).
+// UnmarshalNTildeModProof returns the peer's ModProof over its NTilde.
+// SCOPE: the verifier is ProofMod.Verify(Session, N)
+// (crypto/modproof/proof.go#Verify), whose only statement input is the modulus,
+// so the proof attests properties of NTilde alone (Blum-integer shape). It
+// does NOT attest that NTilde is a product of safe primes: safe-primality is a
+// property of NTilde's two prime factors — for each factor f, that (f-1)/2 is
+// prime — and those factors never enter Verify, which receives only their
+// product. For the peer's ring, <h1> == <h2> is established by the
+// two-directional DLN proof pair instead — dlnproof.Proof.Verify(Session, h1,
+// h2, N) (crypto/dlnproof/proof.go#Verify) — verified at round_2.go#Start, by the
+// VerifyDLNProof1 and VerifyDLNProof2 calls.
+// Returns an error if the peer shipped no/invalid proof; round_3.go treats
+// that as a hard reject (SRC-2026-926 — the NoProofMod fallback was removed).
 func (m *KGRound2Message2) UnmarshalNTildeModProof() (*modproof.ProofMod, error) {
 	return modproof.NewProofFromBytes(m.GetNTildeModProof())
 }

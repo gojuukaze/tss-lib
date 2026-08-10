@@ -90,9 +90,19 @@ func (round *round2) Start() *tss.Error {
 
 	// SECURITY (SRC-2026-926): ModProof is mandatory; the NoProofMod
 	// compatibility switch was removed. Always produce the Paillier and NTilde
-	// ModProofs. nTildeModProof attests that the new-committee party's own
-	// NTilde is a Blum-integer product of safe primes — mirrors the keygen
-	// flow and closes the smooth-subgroup NTilde injection path for resharing.
+	// ModProofs. nTildeModProof is a ModProof over this party's own NTilde.
+	// SCOPE: the verifier is ProofMod.Verify(Session, N)
+	// (crypto/modproof/proof.go#Verify), whose only statement input is the
+	// modulus N, so the proof can attest properties of N alone (Blum-integer
+	// shape). It does NOT attest that NTilde is a product of safe primes:
+	// safe-primality is a property of NTilde's two prime factors — for each
+	// factor f, that (f-1)/2 is prime — and those factors never enter Verify,
+	// which receives only their product. It also constrains neither h1 nor
+	// h2, which are not its inputs. For a peer's ring, <h1> == <h2> is
+	// established by the two-directional DLN proof pair instead —
+	// dlnproof.Proof.Verify(Session, h1, h2, N) (crypto/dlnproof/proof.go#Verify)
+	// — verified at round_4_new_step_2.go#Start, by the VerifyDLNProof1 and
+	// VerifyDLNProof2 calls.
 	ContextI := append(round.temp.ssid, big.NewInt(int64(i)).Bytes()...)
 	modProof, err := modproof.NewProof(ContextI, preParams.PaillierSK.N, preParams.PaillierSK.P, preParams.PaillierSK.Q, round.Rand())
 	if err != nil {

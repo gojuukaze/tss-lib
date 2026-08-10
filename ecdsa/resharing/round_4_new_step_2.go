@@ -100,10 +100,23 @@ func (round *round4) Start() *tss.Error {
 				return
 			}
 			// Verify the ModProof for the peer's NTilde. Mirrors the
-			// keygen-side check in keygen/round_3.go. Closes the
-			// smooth-subgroup NTilde injection path for resharing — peer's
-			// saved NTilde / H1 / H2 (set below) is bound to a
-			// Blum-integer-product attestation. Also mandatory.
+			// keygen-side check in keygen/round_3.go. Also mandatory.
+			// SCOPE: the verifier is ProofMod.Verify(Session, N)
+			// (crypto/modproof/proof.go#Verify), whose only statement input is the
+			// modulus, so this attests properties of NTildej alone (Blum-integer
+			// shape). It does NOT attest that NTildej is a product of safe primes:
+			// safe-primality is a property of NTildej's two prime factors — for
+			// each factor f, that (f-1)/2 is prime — and those factors never enter
+			// Verify, which receives only their product. It therefore does not by
+			// itself exclude an NTildej whose multiplicative group has smooth
+			// order, and it constrains neither H1j nor H2j, which are not its
+			// inputs — so the NTildej / H1j / H2j saved below are not jointly bound
+			// by this proof. For the peer's ring, <h1> == <h2> is established by
+			// the two-directional DLN proof pair instead —
+			// dlnproof.Proof.Verify(Session, h1, h2, N)
+			// (crypto/dlnproof/proof.go#Verify) — verified at
+			// round_4_new_step_2.go#Start, by the VerifyDLNProof1 and
+			// VerifyDLNProof2 calls.
 			nTildeModProof, err := r2msg1.UnmarshalNTildeModProof()
 			if err != nil {
 				paiProofCulprits[j] = msg.GetFrom()
