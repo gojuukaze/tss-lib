@@ -26,10 +26,15 @@ type (
 		concurrency         int
 		safePrimeGenTimeout time.Duration
 		// sessionNonce provides per-session SSID uniqueness for GG20 session binding.
-		// For signing, defaults to the message hash if not set.
-		// For keygen/resharing, the caller SHOULD set this to a value agreed upon by
-		// all parties (e.g., a coordinator-assigned session ID) to prevent cross-session
-		// proof replay. If not set, falls back to 0 (no session binding).
+		// The caller MUST set it — to a value agreed upon by all parties, e.g. a
+		// coordinator-assigned session ID — before starting round 1. Every party
+		// that derives an SSID fails round 1 without it, and none of them has a
+		// fallback: ECDSA and EdDSA keygen, ECDSA and EdDSA signing, and the old
+		// committee in ECDSA resharing. A value the library picks for itself is
+		// one no participant agreed to and one it cannot check for freshness.
+		//
+		// Two paths do not read it, because they derive no SSID at all: the new
+		// committee's first round in ECDSA resharing, and EdDSA resharing.
 		sessionNonce *big.Int
 		// NOTE: the former noProofMod and noProofFac legacy-compatibility flags
 		// have both been removed — ModProof (SRC-2026-926) and FacProof are now
@@ -160,6 +165,12 @@ func (params *Parameters) SessionNonce() *big.Int {
 // This value is mixed into the SSID to provide GG20 session binding, preventing
 // cross-session proof replay attacks. All parties in the same session MUST use
 // the same nonce value. The caller is responsible for coordinating this.
+//
+// It must be set before Start(); every round 1 that derives an SSID fails
+// otherwise. Note that Parameters is per party, not per execution: a caller
+// that keeps one Parameters object around for the lifetime of a party has to
+// set a fresh nonce for every execution it runs, since the previous value
+// stays behind otherwise.
 func (params *Parameters) SetSessionNonce(nonce *big.Int) {
 	params.sessionNonce = nonce
 }

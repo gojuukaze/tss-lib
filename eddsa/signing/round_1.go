@@ -30,17 +30,39 @@ func (round *round1) Start() *tss.Error {
 		return round.WrapError(errors.New("round already started"))
 	}
 
+	// The message is consumed in round 3, inside a goroutine, when it is
+	// hashed together with R and the public key; it is also bound into the
+	// SSID below. Until this check existed the only thing that touched the
+	// message this early was the session-nonce fallback, so a caller that
+	// passed none got two broadcast rounds in before the failure surfaced as
+	// a panic in round 3. Reject here, before anything is sent.
+	if round.temp.m == nil {
+		return round.WrapError(errors.New("message to sign is nil"))
+	}
+	// A negative value cannot come from any byte-string encoding of a
+	// message, and it would be indistinguishable from its absolute value both
+	// in the round-3 hash and in the SSID, since both take Bytes().
+	if round.temp.m.Sign() < 0 {
+		return round.WrapError(errors.New("message to sign is negative"))
+	}
+
 	round.number = 1
 	round.started = true
 	round.resetOK()
 
-	// GG20 session binding: use caller-provided session nonce if available,
-	// otherwise fall back to the message hash for per-session SSID uniqueness.
-	if nonce := round.Params().SessionNonce(); nonce != nil {
-		round.temp.ssidNonce = new(big.Int).Set(nonce)
-	} else {
-		round.temp.ssidNonce = new(big.Int).Set(round.temp.m)
+	// GG20 session binding: the caller must supply a session nonce that is
+	// unique to this execution and agreed by every party in it. Keygen and
+	// resharing already require one; signing used to substitute the message
+	// hash instead, which gives no separation at all between two runs over
+	// the same message and cannot be checked for freshness. Fail here rather
+	// than proceed with an SSID nobody chose.
+	nonce := round.Params().SessionNonce()
+	if nonce == nil {
+		return round.WrapError(errors.New(
+			"signing requires a session nonce; call Parameters.SetSessionNonce " +
+				"with a value agreed by all parties before starting the round"))
 	}
+	round.temp.ssidNonce = new(big.Int).Set(nonce)
 	var err error
 	round.temp.ssid, err = round.getSSID()
 	if err != nil {

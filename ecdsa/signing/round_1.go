@@ -49,13 +49,19 @@ func (round *round1) Start() *tss.Error {
 	round.number = 1
 	round.started = true
 	round.resetOK()
-	// GG20 session binding: use caller-provided session nonce if available,
-	// otherwise fall back to the message hash for per-session SSID uniqueness.
-	if nonce := round.Params().SessionNonce(); nonce != nil {
-		round.temp.ssidNonce = new(big.Int).Set(nonce)
-	} else {
-		round.temp.ssidNonce = new(big.Int).Set(round.temp.m)
+	// GG20 session binding: the caller must supply a session nonce that is
+	// unique to this execution and agreed by every party in it. Keygen and
+	// resharing already require one; signing used to substitute the message
+	// hash instead, which gives no separation at all between two runs over
+	// the same message and cannot be checked for freshness. Fail here rather
+	// than proceed with an SSID nobody chose.
+	nonce := round.Params().SessionNonce()
+	if nonce == nil {
+		return round.WrapError(errors.New(
+			"signing requires a session nonce; call Parameters.SetSessionNonce " +
+				"with a value agreed by all parties before starting the round"))
 	}
+	round.temp.ssidNonce = new(big.Int).Set(nonce)
 	ssid, err := round.getSSID()
 	if err != nil {
 		return round.WrapError(err)

@@ -33,6 +33,7 @@ func TestRound1RejectsMessageHashOutsideZq(t *testing.T) {
 
 	newParty := func(m *big.Int) *LocalParty {
 		params := tss.NewParameters(tss.S256(), p2pCtx, signPIDs[0], len(signPIDs), testThreshold)
+		params.SetSessionNonce(big.NewInt(1))
 		outCh := make(chan tss.Message, 16)
 		endCh := make(chan *common.SignatureData, 1)
 		return NewLocalParty(m, params, keys[0], outCh, endCh).(*LocalParty)
