@@ -70,6 +70,26 @@ func ParseSecrets(secrets []*big.Int) ([][]*big.Int, error) {
 		}
 		if isLenEl {
 			nextPartLen = secrets[el].Int64()
+			// The slice expression below, secrets[el : el+nextPartLen], requires
+			// 0 <= el <= el+nextPartLen <= len(secrets). `el` is guarded above;
+			// the upper end is guarded by MaxPartSize plus the length check in
+			// the data branch. The LOWER end of nextPartLen was unguarded.
+			//
+			// A length prefix is only ever produced by builder.Secrets() above,
+			// as big.NewInt(int64(len(p))), and len() of a Go slice is never
+			// negative, so this library never emits a negative prefix. The prefix
+			// decoded here, however, comes off the wire via big.Int.SetBytes, and
+			// Int64() reinterprets the low 64 bits: any prefix with bit 63 set
+			// decodes to a NEGATIVE length, which "MaxPartSize < nextPartLen"
+			// does not catch and which reaches the slice expression.
+			//
+			// Deliberately narrow: this rejects only the negative case, so every
+			// input the parser accepted before is still accepted, unchanged.
+			// In particular a prefix >= 2^64 whose low 64 bits are non-negative
+			// still truncates silently, exactly as it did before this check.
+			if nextPartLen < 0 {
+				return nil, fmt.Errorf("ParseSecrets: negative commitment part length: part %d, decoded %d (bitLen %d)", len(parts), nextPartLen, secrets[el].BitLen())
+			}
 			if MaxPartSize < nextPartLen {
 				return nil, fmt.Errorf("ParseSecrets: commitment part too large: part %d, size %d", len(parts), nextPartLen)
 			}
