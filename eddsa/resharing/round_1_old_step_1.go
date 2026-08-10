@@ -25,11 +25,37 @@ func newRound1(params *tss.ReSharingParameters, input, save *keygen.LocalPartySa
 	}
 }
 
+// dualRoleErrText is the fixed text of the round-1 dual-role rejection.
+const dualRoleErrText = "this party is in both the old and the new committee; " +
+	"the two committees must be disjoint (re-sharing in place is not a supported configuration)"
+
+// rejectDualRole is defence in depth behind tss.NewReSharingParameters, which
+// refuses a non-empty committee intersection at construction time. That check
+// is construction-time ONLY: NewPeerContext holds the caller's slice by
+// reference and PeerContext.SetIDs rewrites it, so a caller can still steer a
+// party into both committees after its Parameters were built.
+//
+// It reports no culprits on purpose. This is a purely local configuration
+// fault; blaming a peer would misattribute it to an honest old party, and the
+// PartyIDs involved carry old-committee indices that mean nothing in the new
+// committee's index space.
+func (round *round1) rejectDualRole() *tss.Error {
+	if round.ReSharingParams().IsOldCommittee() && round.ReSharingParams().IsNewCommittee() {
+		return round.WrapError(errors.New(dualRoleErrText))
+	}
+	return nil
+}
+
 func (round *round1) Start() *tss.Error {
 	if round.started {
 		return round.WrapError(errors.New("round already started"))
 	}
 	round.number = 1
+	// Refuse before any state is touched: `started` stays false, so CanProceed()
+	// can never be satisfied and the party cannot advance out of round 1.
+	if err := round.rejectDualRole(); err != nil {
+		return err
+	}
 	round.started = true
 	round.resetOK() // resets both round.oldOK and round.newOK
 	round.allNewOK()
@@ -89,6 +115,12 @@ func (round *round1) CanAccept(msg tss.ParsedMessage) bool {
 }
 
 func (round *round1) Update() (bool, *tss.Error) {
+	// Re-check here, not only in Start(): the guard has to hold the party still
+	// even if the dual role was introduced after Start() ran. Returning before
+	// any `oldOK` bit is set is what keeps the party from advancing.
+	if err := round.rejectDualRole(); err != nil {
+		return false, err
+	}
 	// only the new committee receive in this round
 	if !round.ReSharingParameters.IsNewCommittee() {
 		return true, nil

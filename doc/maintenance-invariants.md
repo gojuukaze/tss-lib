@@ -59,6 +59,49 @@ checks that cover factor size live in `crypto/modproof` and `crypto/paillier`,
 which is why neither of those may be skipped (the `NoProofMod` and `NoProofFac`
 compatibility switches have both been removed).
 
+## 6. `tss` re-sharing — the committees must stay disjoint
+
+`tss.NewReSharingParameters` panics when a party key appears in both the old
+and the new committee. It reads like over-strict input validation: nothing in
+the maths forbids the same person holding a share before and after, and the
+obvious "fix" for a caller who trips over it is to delete the check.
+
+Deleting it silently re-opens a whole cascade, and **no test in this tree would
+catch it**. Five `ok`-tracker pre-sets in the re-sharing rounds are gated on the
+predicate for the SENDER role in that round, not on the negation of the
+predicate for the RECEIVER role:
+
+| site | pre-set | gated on | correct gate |
+| --- | --- | --- | --- |
+| `ecdsa/resharing/round_1_old_step_1.go:67` | `allOldOK()` | `IsOldCommittee()` | `!IsNewCommittee()` |
+| `ecdsa/resharing/round_3_old_step_2.go:27` | `allOldOK()` | `IsOldCommittee()` | `!IsNewCommittee()` |
+| `eddsa/resharing/round_1_old_step_1.go:66` | `allOldOK()` | `IsOldCommittee()` | `!IsNewCommittee()` |
+| `eddsa/resharing/round_2_new_step_1.go:27` | `allNewOK()` | `IsNewCommittee()` | `!IsOldCommittee()` |
+| `eddsa/resharing/round_3_old_step_2.go:27` | `allOldOK()` | `IsOldCommittee()` | `!IsNewCommittee()` |
+
+For a party in exactly one committee the two gates coincide, which is why the
+code has always looked correct. For a party in both, each of those five lines
+marks a message it is genuinely waiting for as already received. The party then
+walks into the next round with empty message slots and dereferences them.
+
+Those five lines are correct **only because the constructor now guarantees the
+two committees are disjoint**. They are not defended by anything local to them.
+If you need to change the disjointness rule, fix the five gates first.
+
+The constructor's guarantee holds **at construction time only**.
+`tss.NewPeerContext` keeps the caller's slice by reference,
+`(*tss.PeerContext).SetIDs` replaces it wholesale, and the `*PartyID` values
+remain owned by the caller — so a dual-role party can still be produced after
+`NewReSharingParameters` has returned. The `rejectDualRole` guards at the top of
+`Start()` and `Update()` in both `round_1_old_step_1.go` files exist for that
+case. They are defence in depth, not redundancy: they stop the party before any
+tracker bit is set and report **no culprits**, because a local misconfiguration
+must not be attributed to an honest peer.
+
+Related: `ecdsa/resharing/round_2_new_step_1.go:152-169` contains an
+`IsOldCommittee() && IsNewCommittee()` branch written in 2019 for the dual-role
+case. It is retained deliberately, as the record of what this rule replaces.
+
 ---
 
 ## Implementation note: signing round 2 is not seed-deterministic

@@ -18,6 +18,12 @@ import (
 	"github.com/bnb-chain/tss-lib/v4/tss"
 )
 
+// nonPositiveNonceErrText is worded identically at every round-1 site that
+// reads Parameters.SessionNonce().
+const nonPositiveNonceErrText = "session nonce must be positive; call " +
+	"Parameters.SetSessionNonce with a positive value agreed by all parties " +
+	"before starting the round"
+
 // round 1 represents round 1 of the signing part of the EDDSA TSS spec
 func newRound1(params *tss.Parameters, key *keygen.LocalPartySaveData, data *common.SignatureData, temp *localTempData, out chan<- tss.Message, end chan<- *common.SignatureData) tss.Round {
 	return &round1{
@@ -61,6 +67,11 @@ func (round *round1) Start() *tss.Error {
 		return round.WrapError(errors.New(
 			"signing requires a session nonce; call Parameters.SetSessionNonce " +
 				"with a value agreed by all parties before starting the round"))
+	}
+	// See ecdsa/keygen/round_1.go: the SSID hash takes Bytes(), the magnitude
+	// only, so -n and +n collide and 0 is one constant for every session.
+	if nonce.Sign() <= 0 {
+		return round.WrapError(errors.New(nonPositiveNonceErrText))
 	}
 	round.temp.ssidNonce = new(big.Int).Set(nonce)
 	var err error

@@ -13,6 +13,7 @@ import (
 	"io"
 	"math/big"
 	"runtime"
+	"strings"
 	"time"
 )
 
@@ -178,6 +179,25 @@ func (params *Parameters) SetSessionNonce(nonce *big.Int) {
 // ----- //
 
 // Exported, used in `tss` client
+//
+// Panics if the old and the new committee share a member. Re-sharing "in
+// place" — the same party sitting in both committees — is not a supported
+// configuration: no round in either the ECDSA or the EdDSA re-sharing protocol
+// is written for a party that is simultaneously a sender and a receiver, and
+// the "ok" trackers of five rounds are pre-set on the SENDER-role predicate
+// (see doc/maintenance-invariants.md). Membership is decided by the party KEY,
+// which is the only identity the protocol shares across the two committees —
+// not by Index (the two committees have independent index spaces and legally
+// both start at 0), not by the key's residue mod q (`k` and `k + q` are two
+// different parties here, whatever the Lagrange arithmetic later does with
+// them), and not by position in the sorted order.
+//
+// SCOPE: this is a CONSTRUCTION-TIME check and nothing more. It says nothing
+// about the state of the two PeerContexts later on: NewPeerContext keeps the
+// caller's slice by reference, PeerContext.SetIDs rewrites it in place, and the
+// *PartyID values stay owned by the caller. A caller that mutates a context
+// after construction can still produce a dual-role party; the round-1 guards in
+// ecdsa/resharing and eddsa/resharing are the defence in depth for that case.
 func NewReSharingParameters(ec elliptic.Curve, ctx, newCtx *PeerContext, partyID *PartyID, partyCount, threshold, newPartyCount, newThreshold int) *ReSharingParameters {
 	params := NewParameters(ec, ctx, partyID, partyCount, threshold)
 	// Apply the same mod-q distinctness check to the new committee. The
@@ -186,12 +206,86 @@ func NewReSharingParameters(ec elliptic.Curve, ctx, newCtx *PeerContext, partyID
 	if newCtx != nil {
 		assertDistinctIDsModQ(ec, newCtx.IDs())
 	}
+	assertDisjointCommittees(ctx, newCtx)
 	return &ReSharingParameters{
 		Parameters:    params,
 		newParties:    newCtx,
 		newPartyCount: newPartyCount,
 		newThreshold:  newThreshold,
 	}
+}
+
+// CommitteeOverlapKeys returns the party keys that appear in BOTH committees,
+// in old-committee order, de-duplicated. An empty result means the two
+// committees are disjoint and NewReSharingParameters will accept them.
+//
+// Callers who would rather branch than catch a panic can use this first.
+// Two parties are the same party iff their keys are equal as integers; `Index`
+// and the mod-q residue of the key are deliberately not consulted.
+//
+// A nil context yields no overlap: a caller who passes nil has not described a
+// committee, which matches how NewParameters treats a nil PeerContext.
+func CommitteeOverlapKeys(oldCtx, newCtx *PeerContext) []*big.Int {
+	if oldCtx == nil || newCtx == nil {
+		return nil
+	}
+	return committeeOverlapKeys(oldCtx.IDs(), newCtx.IDs())
+}
+
+// partyKeyID returns the party's exact key as a canonical hex string, plus
+// whether it could be read at all.
+//
+// KeyInt() is promoted through the embedded *MessageWrapper_PartyID, so
+// `id.KeyInt()` dereferences that pointer — testing `id.KeyInt() == nil` would
+// fault on exactly the malformed PartyID it is trying to skip (and would never
+// be true anyway, since SetBytes(nil) returns 0, not nil). Test the embedded
+// pointer explicitly first, the same way ValidateBasic does.
+func partyKeyID(id *PartyID) (string, bool) {
+	if id == nil || id.MessageWrapper_PartyID == nil {
+		return "", false
+	}
+	return id.KeyInt().Text(16), true
+}
+
+func committeeOverlapKeys(oldIDs, newIDs []*PartyID) []*big.Int {
+	inNew := make(map[string]struct{}, len(newIDs))
+	for _, id := range newIDs {
+		if k, ok := partyKeyID(id); ok {
+			inNew[k] = struct{}{}
+		}
+	}
+	overlap := make([]*big.Int, 0, len(oldIDs))
+	reported := make(map[string]struct{}, len(oldIDs))
+	for _, id := range oldIDs {
+		k, ok := partyKeyID(id)
+		if !ok {
+			continue
+		}
+		if _, dup := reported[k]; dup {
+			continue
+		}
+		if _, both := inNew[k]; both {
+			reported[k] = struct{}{}
+			overlap = append(overlap, id.KeyInt())
+		}
+	}
+	return overlap
+}
+
+// assertDisjointCommittees panics if any party key is present in both
+// committees. See NewReSharingParameters for why this is fatal and for the
+// (construction-time only) scope of the guarantee.
+func assertDisjointCommittees(oldCtx, newCtx *PeerContext) {
+	overlap := CommitteeOverlapKeys(oldCtx, newCtx)
+	if len(overlap) == 0 {
+		return
+	}
+	hexes := make([]string, len(overlap))
+	for i, k := range overlap {
+		hexes[i] = k.Text(16)
+	}
+	panic(fmt.Errorf("NewReSharingParameters: the old and the new committee must be disjoint; re-sharing in place is not a supported configuration; %d party key(s) are in both committees: [%s]",
+		len(overlap), strings.Join(hexes, " ")))
 }
 
 // assertDistinctIDsModQ panics if any two ids share the same `KeyInt() mod q`
