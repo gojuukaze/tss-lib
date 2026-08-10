@@ -28,8 +28,17 @@ type (
 	SortedPartyIDs   []*PartyID
 )
 
+// ValidateBasic reports whether this PartyID is well formed.
+//
+// The `pid != nil` conjunct guards only the OUTER pointer. `pid.Key` is a
+// PROMOTED field: it compiles to `pid.MessageWrapper_PartyID.Key`, so reading
+// it also dereferences the embedded pointer. A PartyID whose outer pointer is
+// non-nil but whose embedded *MessageWrapper_PartyID is nil — the shape that
+// encoding/json produces from `{"index":n}`, and that a shallow copy can
+// produce — therefore used to fault inside the very predicate that is supposed
+// to reject it. Test the embedded pointer explicitly, before the promoted read.
 func (pid *PartyID) ValidateBasic() bool {
-	return pid != nil && pid.Key != nil && 0 <= pid.Index
+	return pid != nil && pid.MessageWrapper_PartyID != nil && pid.Key != nil && 0 <= pid.Index
 }
 
 // --- ProtoBuf Extensions
