@@ -74,6 +74,45 @@ func TestNewParametersSkipsNilEmbeddedInsteadOfFaulting(t *testing.T) {
 	}
 }
 
+// Keys() is reachable without going through SortPartyIDs: SortedPartyIDs is an
+// exported slice type and NewPeerContext takes one as-is.
+func TestSortedPartyIDsKeysRejectsNilEmbeddedWithItsOwnPanic(t *testing.T) {
+	spids := SortedPartyIDs{nilEmbeddedPartyID(t)}
+
+	defer func() {
+		r := recover()
+		if r == nil {
+			t.Fatal("expected a panic")
+		}
+		err, ok := r.(error)
+		if !ok {
+			t.Fatalf("expected the panic value to be an error, got %T: %v", r, r)
+		}
+		if !strings.Contains(err.Error(), "SortedPartyIDs.Keys:") {
+			t.Fatalf("panicked, but not with the intended attributable error: %v", err)
+		}
+	}()
+
+	spids.Keys()
+}
+
+// Keys() must still return the keys for well-formed input, or the test above
+// would pass against a Keys() that panicked unconditionally.
+func TestSortedPartyIDsKeysStillReturnsKeys(t *testing.T) {
+	mk := func(name string, key int64, idx int) *PartyID {
+		return &PartyID{
+			MessageWrapper_PartyID: &MessageWrapper_PartyID{
+				Id: name, Moniker: name, Key: big.NewInt(key).Bytes(),
+			},
+			Index: idx,
+		}
+	}
+	got := SortedPartyIDs{mk("a", 7, 0), mk("b", 9, 1)}.Keys()
+	if len(got) != 2 || got[0].Int64() != 7 || got[1].Int64() != 9 {
+		t.Fatalf("got %v, want [7 9]", got)
+	}
+}
+
 // The distinctness check must still fire for well-formed IDs, or the test above
 // would pass just as well against a guard that skipped everything.
 func TestNewParametersStillRejectsCollidingKeys(t *testing.T) {

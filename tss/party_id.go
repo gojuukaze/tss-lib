@@ -131,9 +131,25 @@ func GenerateTestPartyIDs(count int, startAt ...int) SortedPartyIDs {
 	return SortPartyIDs(ids, startAt...)
 }
 
+// Keys returns each party's key as a *big.Int, in sorted order.
+//
+// It panics on a malformed entry rather than substituting a value. There is no
+// safe substitute: the slice is positional, so a placeholder would have to be a
+// number, and 0 is the one value that must never appear here — a party whose key
+// is 0 mod q would receive the Shamir secret itself as its share. An
+// attributable panic is the only honest outcome.
+//
+// SortedPartyIDs is an exported slice type, so it can be built directly (and
+// NewPeerContext accepts one as-is), which is why this cannot rely on
+// SortPartyIDs having screened the entries.
 func (spids SortedPartyIDs) Keys() []*big.Int {
 	ids := make([]*big.Int, spids.Len())
 	for i, pid := range spids {
+		// Test the embedded pointer: KeyInt is promoted through it, so reading
+		// the key is what faults. See SortPartyIDs for the full reasoning.
+		if pid == nil || pid.MessageWrapper_PartyID == nil {
+			panic(fmt.Errorf("SortedPartyIDs.Keys: entry %d is a nil PartyID or has a nil embedded PartyID", i))
+		}
 		ids[i] = pid.KeyInt()
 	}
 	return ids
