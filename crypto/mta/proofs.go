@@ -169,6 +169,14 @@ func ProveBob(Session []byte, ec elliptic.Curve, pk *paillier.PublicKey, NTilde,
 }
 
 func ProofBobWCFromBytes(ec elliptic.Curve, bzs [][]byte) (*ProofBobWC, error) {
+	// ProofBobFromBytes accepts EITHER arity on purpose -- a ProofBobWC's first
+	// ten parts are a well-formed ProofBob -- so delegating to it does not
+	// establish that parts 10 and 11 exist. Require the WC arity here, before
+	// reading them, or a ten-part input walks past the end of the slice.
+	if !common.NonEmptyMultiBytes(bzs, ProofBobWCBytesParts) {
+		return nil, fmt.Errorf(
+			"expected %d byte parts to construct ProofBobWC", ProofBobWCBytesParts)
+	}
 	proofBob, err := ProofBobFromBytes(bzs)
 	if err != nil {
 		return nil, err
