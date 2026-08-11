@@ -7,6 +7,8 @@
 package mta
 
 import (
+	"math/big"
+	"strings"
 	"testing"
 
 	"github.com/btcsuite/btcd/btcec/v2"
@@ -46,5 +48,57 @@ func TestProofBobWCFromBytesRejectsProofBobArity(t *testing.T) {
 func TestProofBobFromBytesStillAcceptsTenParts(t *testing.T) {
 	if _, err := ProofBobFromBytes(tenNonEmptyParts()); err != nil {
 		t.Fatalf("ProofBobFromBytes must still accept %d parts: %v", ProofBobBytesParts, err)
+	}
+}
+
+// ProofBobWC.Bytes reads two parts that only exist on the WC form, via
+// pf.ProofBob (an embedded pointer) and pf.U (an ECPoint). Delegating to
+// ProofBob.Bytes does not establish either. The type's own ValidateBasic does.
+func TestProofBobWCBytesRejectsMalformedReceiver(t *testing.T) {
+	cases := map[string]*ProofBobWC{
+		"nil receiver":       nil,
+		"nil embedded proof": {ProofBob: nil, U: nil},
+		"nil U":              {ProofBob: &ProofBob{}, U: nil},
+	}
+	for name, pf := range cases {
+		t.Run(name, func(t *testing.T) {
+			defer func() {
+				r := recover()
+				if r == nil {
+					t.Fatal("expected a panic")
+				}
+				err, ok := r.(error)
+				if !ok {
+					t.Fatalf("expected an error panic value, got %T: %v", r, r)
+				}
+				if !strings.Contains(err.Error(), "ProofBobWC.Bytes:") {
+					t.Fatalf("panicked, but not with the intended attributable error: %v", err)
+				}
+			}()
+			pf.Bytes()
+		})
+	}
+}
+
+func TestProofBobBytesRejectsNilField(t *testing.T) {
+	defer func() {
+		r := recover()
+		if r == nil {
+			t.Fatal("expected a panic")
+		}
+		if err, ok := r.(error); !ok || !strings.Contains(err.Error(), "ProofBob.Bytes:") {
+			t.Fatalf("panicked, but not with the intended attributable error: %v", r)
+		}
+	}()
+	(&ProofBob{Z: big.NewInt(1)}).Bytes() // every other field nil
+}
+
+// Negative control: a well-formed proof must still serialise, or the guards
+// above would pass against a Bytes() that panicked unconditionally.
+func TestProofBobBytesStillSerialisesWellFormed(t *testing.T) {
+	one := big.NewInt(1)
+	pf := &ProofBob{Z: one, ZPrm: one, T: one, V: one, W: one, S: one, S1: one, S2: one, T1: one, T2: one}
+	if got := pf.Bytes(); len(got) != ProofBobBytesParts {
+		t.Fatalf("got %d parts, want %d", len(got), ProofBobBytesParts)
 	}
 }

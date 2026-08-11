@@ -442,7 +442,16 @@ func (pf *ProofBobWC) ValidateBasic() bool {
 	return pf != nil && pf.ProofBob != nil && pf.ProofBob.ValidateBasic() && pf.U != nil
 }
 
+// Bytes serialises the proof. It requires a well-formed receiver and says so by
+// panicking, because there is no honest alternative: the return type is a fixed
+// array of byte slices with no error channel, and substituting an empty slice
+// for a missing field would emit a proof that looks serialisable and is not.
+// ValidateBasic is the type's own definition of well-formed, so it is what the
+// guard tests -- a nil field would otherwise fault inside (*big.Int).Bytes().
 func (pf *ProofBob) Bytes() [ProofBobBytesParts][]byte {
+	if !pf.ValidateBasic() {
+		panic(fmt.Errorf("ProofBob.Bytes: receiver is nil or has a nil field; ValidateBasic must hold first"))
+	}
 	return [...][]byte{
 		pf.Z.Bytes(),
 		pf.ZPrm.Bytes(),
@@ -457,7 +466,15 @@ func (pf *ProofBob) Bytes() [ProofBobBytesParts][]byte {
 	}
 }
 
+// Bytes serialises the proof. Like ProofBob.Bytes it demands a well-formed
+// receiver. Delegating to ProofBob.Bytes does NOT cover this type's own two
+// extra obligations: pf.ProofBob must be non-nil to delegate at all, and pf.U
+// must be non-nil before X()/Y() read its coordinates. ProofBobWC.ValidateBasic
+// asserts exactly those two on top of the embedded proof's own check.
 func (pf *ProofBobWC) Bytes() [ProofBobWCBytesParts][]byte {
+	if !pf.ValidateBasic() {
+		panic(fmt.Errorf("ProofBobWC.Bytes: receiver is nil, has a nil embedded ProofBob, a nil U, or a nil field; ValidateBasic must hold first"))
+	}
 	var out [ProofBobWCBytesParts][]byte
 	bobBzs := pf.ProofBob.Bytes()
 	bobBzsSlice := bobBzs[:]

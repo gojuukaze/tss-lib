@@ -46,11 +46,26 @@ func NewECPointNoCurveCheck(curve elliptic.Curve, X, Y *big.Int) *ECPoint {
 	return &ECPoint{curve, [2]*big.Int{X, Y}}
 }
 
+// X and Y return a copy of the respective coordinate.
+//
+// They panic on a nil receiver or a nil coordinate rather than faulting inside
+// (*big.Int).Set. Returning nil instead would not help: every caller in this
+// tree immediately calls Cmp or Bytes on the result, so a nil return relocates
+// the same fault one frame later and further from its cause. A coordinate can
+// legitimately be nil here because NewECPointNoCurveCheck stores whatever it is
+// given -- the nil guards that exist are in the CALLERS (Add, ScalarMult,
+// Equals), and they guard the outer pointer only.
 func (p *ECPoint) X() *big.Int {
+	if p == nil || p.coords[0] == nil {
+		panic(errors.New("ECPoint.X: nil point or nil X coordinate"))
+	}
 	return new(big.Int).Set(p.coords[0])
 }
 
 func (p *ECPoint) Y() *big.Int {
+	if p == nil || p.coords[1] == nil {
+		panic(errors.New("ECPoint.Y: nil point or nil Y coordinate"))
+	}
 	return new(big.Int).Set(p.coords[1])
 }
 
@@ -108,7 +123,15 @@ func (p *ECPoint) ToECDSAPubKey() *ecdsa.PublicKey {
 	}
 }
 
+// IsOnCurve reports whether the point satisfies its curve equation. A nil point,
+// or one with no curve, is not on any curve -- it returns false rather than
+// faulting, because it has a bool to say it with. `curve` is a direct field of
+// interface type, so it is nil-able even when the point itself is not, and
+// isOnCurve dereferences it at c.Params().
 func (p *ECPoint) IsOnCurve() bool {
+	if p == nil || p.curve == nil {
+		return false
+	}
 	return isOnCurve(p.curve, p.coords[0], p.coords[1])
 }
 
@@ -116,8 +139,16 @@ func (p *ECPoint) Curve() elliptic.Curve {
 	return p.curve
 }
 
+// Equals reports whether the two points have equal coordinates. The nil guard
+// covers the OUTER pointers; the coordinates reached through them are nil-able
+// too, and X()/Y() now panic on those, so they are tested here as well. A
+// malformed point equals nothing, including another malformed point -- a
+// comparison has a bool to return and should not abort the caller.
 func (p *ECPoint) Equals(p2 *ECPoint) bool {
 	if p == nil || p2 == nil {
+		return false
+	}
+	if p.coords[0] == nil || p.coords[1] == nil || p2.coords[0] == nil || p2.coords[1] == nil {
 		return false
 	}
 	return p.X().Cmp(p2.X()) == 0 && p.Y().Cmp(p2.Y()) == 0
@@ -302,7 +333,13 @@ func UnFlattenECPoints(curve elliptic.Curve, in []*big.Int, noCurveCheck ...bool
 // ----- //
 // Gob helpers for if you choose to encode messages with Gob.
 
+// GobEncode has an error to return, so a nil receiver produces one instead of a
+// fault. (A nil coordinate does not need its own case: (*big.Int).GobEncode is
+// nil-receiver safe and yields an empty encoding.)
 func (p *ECPoint) GobEncode() ([]byte, error) {
+	if p == nil {
+		return nil, errors.New("ECPoint.GobEncode: nil point")
+	}
 	buf := &bytes.Buffer{}
 	x, err := p.coords[0].GobEncode()
 	if err != nil {

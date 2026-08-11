@@ -363,22 +363,37 @@ func (rgParams *ReSharingParameters) OldAndNewPartyCount() int {
 	return rgParams.OldPartyCount() + rgParams.NewPartyCount()
 }
 
-func (rgParams *ReSharingParameters) IsOldCommittee() bool {
-	partyID := rgParams.partyID
-	for _, Pj := range rgParams.parties.IDs() {
-		if partyID.KeyInt().Cmp(Pj.KeyInt()) == 0 {
+// isInCommittee reports whether this party's key appears in the given roster.
+//
+// Nothing validates rgParams.partyID or either PeerContext at construction time:
+// NewParameters checks partyCount, threshold and the roster's residues, but it
+// never looks at partyID, and it stores a nil context unconditionally. The
+// resharing constructor calls IsOldCommittee before any round runs, so
+// BaseStart's ValidateBasic is too late to help here. Both malformed inputs
+// therefore have to be tolerated at this level, and "not in the committee" is
+// the honest answer for each: a party with no readable key matches nobody, and
+// an absent roster contains nobody.
+//
+// Keys are compared as canonical hex, which is equality on the same integers
+// partyKeyID reads -- so this agrees with the previous KeyInt().Cmp comparison
+// on every well-formed input, and simply declines to fault on the rest.
+func (rgParams *ReSharingParameters) isInCommittee(ctx *PeerContext) bool {
+	self, ok := partyKeyID(rgParams.partyID)
+	if !ok {
+		return false
+	}
+	for _, Pj := range ctx.IDs() {
+		if key, ok := partyKeyID(Pj); ok && key == self {
 			return true
 		}
 	}
 	return false
 }
 
+func (rgParams *ReSharingParameters) IsOldCommittee() bool {
+	return rgParams.isInCommittee(rgParams.parties)
+}
+
 func (rgParams *ReSharingParameters) IsNewCommittee() bool {
-	partyID := rgParams.partyID
-	for _, Pj := range rgParams.newParties.IDs() {
-		if partyID.KeyInt().Cmp(Pj.KeyInt()) == 0 {
-			return true
-		}
-	}
-	return false
+	return rgParams.isInCommittee(rgParams.newParties)
 }
