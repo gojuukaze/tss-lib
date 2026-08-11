@@ -167,6 +167,12 @@ func (round *round2) Start() *tss.Error {
 	// compute ntilde, h1, h2 (uses safe primes)
 	// use the pre-params if they were provided to the LocalParty constructor
 	var preParams *keygen.LocalPreParams
+	// The first branch is unreachable today and is kept as defence in depth.
+	// NewLocalParty copies the caller's LocalPreParams into round.save ONLY when
+	// ValidateWithProof() holds, so an incomplete set never arrives here: it is
+	// discarded (and logged) at construction, and what round 2 sees is the zero
+	// value, for which Validate() is false. Do not read this branch as the place
+	// where an incomplete set is rejected.
 	if round.save.LocalPreParams.Validate() && !round.save.LocalPreParams.ValidateWithProof() {
 		return round.WrapError(
 			errors.New("`optionalPreParams` failed to validate; it might have been generated with an older version of tss-lib"))

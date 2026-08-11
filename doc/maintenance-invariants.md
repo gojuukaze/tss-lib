@@ -188,6 +188,51 @@ attempt to erase anything.
 
 ---
 
+## 8. `ecdsa/resharing` — re-sharing rotates the shares, not the pre-params
+
+If the caller hands `resharing.NewLocalParty` a save data whose `LocalPreParams`
+passes `ValidateWithProof()`, that set is reused **byte for byte**: the same
+Paillier private key, the same NTilde trapdoor, the same `h1` and `h2` are
+carried into the new committee. `round_2_new_step_1.go` prefers
+`round.save.LocalPreParams` over generating a new set, and
+`local_party.go#NewLocalParty` is what puts the caller's set there.
+
+This is deliberate — regenerating safe primes costs minutes, and passing
+pre-params in is the documented way to avoid that — but it means **re-sharing
+refreshes the VSS shares and refreshes nothing else**. A host that re-shares in
+order to recover from a suspected compromise of one party's Paillier key or
+NTilde trapdoor gets no such recovery unless it leaves `LocalPreParams` unset for
+that party.
+
+Do not "simplify" this into an unconditional `GeneratePreParams`, and do not
+remove the caller's ability to pass a set in. Both are load-bearing in opposite
+directions. What is missing, and what section changes here should preserve, is
+that the trade-off is stated where the caller chooses it: the constructor's doc
+comment.
+
+### The incomplete-pre-params path is asymmetric between keygen and re-sharing
+
+A `LocalPreParams` that is present but incomplete — `Validate()` true,
+`ValidateWithProof()` false, which is the shape older versions of this library
+produced before they stored `P`, `Q`, `Alpha` and `Beta` — cannot be used, because
+the round-2 DLN proofs need exactly those fields. The two entry points then do
+different things with byte-identical input:
+
+- `keygen.NewLocalParty` **panics** in the constructor.
+- `resharing.NewLocalParty` **discards** it and lets round 2 generate a fresh set.
+
+The discard is now logged. Keep it that way, or make both sides agree — but do not
+make the re-sharing side silent again: round 2 sees only the zero value and cannot
+tell "the caller passed an unusable set" apart from "the caller passed nothing",
+so the constructor is the only place where that distinction still exists.
+
+Note also that `round_2_new_step_1.go`'s
+`Validate() && !ValidateWithProof()` guard is **unreachable** for the same reason,
+and is kept only as defence in depth. It is not the place where an incomplete set
+is rejected; if you are tracing that behaviour, the constructor is.
+
+---
+
 ## Implementation note: signing round 2 is not seed-deterministic
 
 `ecdsa/signing/round_2.go` runs `BobMid` and `BobMidWC` in two concurrent
