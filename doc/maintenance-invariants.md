@@ -243,3 +243,39 @@ values drawn on each side therefore differ from run to run, while round 1
 Any test or diagnostic that asserts "two runs must agree byte for byte" has to
 account for this, or it will report the library's own concurrency as a
 reproducibility failure.
+
+---
+
+## 9. `signing` — the message guard is asymmetric between the curves on purpose
+
+`ecdsa/signing/round_1.go` rejects a message hash with `m <= 0 || m >= N`.
+`eddsa/signing/round_1.go` rejects only `m < 0`. That is not an oversight and must
+not be "completed" by analogy.
+
+The difference is what `m` is on each curve:
+
+- **ECDSA** — `m` is a **scalar**. `round_5.go` computes `m*k` and
+  `m*k + rx*sigma`; `round_7.go` computes `-m mod N`. Zq membership is an
+  algebraic requirement, and `m == 0` collapses the share to `rx*sigma`.
+- **EdDSA** — `m` only ever reaches `sha512`, in round 3's `h = H(R || A || M)`
+  and in the SSID pre-image. It is never a scalar, so no interval applies.
+
+Importing the ECDSA guard into EdDSA would reject honest input twice over: any
+message longer than 32 bytes exceeds `N` once read as a `big.Int`, and `m == 0`
+is a perfectly well-defined message whenever `fullBytesLen` is set, because
+`FillBytes` preserves the leading zeros that `Bytes()` drops.
+
+The general rule this stands for: **"the last fix in this family only covered one
+curve" is a lead, not a conclusion.** Confirm that both sites have the same
+mechanism before copying a guard across. A guard that is correct on one side can
+be a false-rejection bug on the other.
+
+### Known gap, deliberately not patched here
+
+`fullBytesLen` decides what bytes are actually signed (`FillBytes` when non-zero,
+`Bytes()` when zero) but is **not** part of the SSID pre-image, which takes
+`m.Bytes()` — magnitude only, no length. Two executions with the same numeric `m`
+and different `fullBytesLen` therefore share an SSID while signing different byte
+strings. `fullBytesLen` is also a per-party variadic argument that nothing
+compares across parties. Changing this alters SSID values and so is not a local
+fix; it is tracked separately.

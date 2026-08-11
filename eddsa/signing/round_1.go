@@ -48,6 +48,17 @@ func (round *round1) Start() *tss.Error {
 	// A negative value cannot come from any byte-string encoding of a
 	// message, and it would be indistinguishable from its absolute value both
 	// in the round-3 hash and in the SSID, since both take Bytes().
+	//
+	// The asymmetry with ecdsa/signing/round_1.go is deliberate. That side
+	// rejects m <= 0 and m >= N because there m IS a scalar: round 5 computes
+	// m*k and m*k + rx*sigma, and round 7 computes -m mod N, so Zq membership
+	// is an algebraic requirement and m == 0 changes the shape of the share.
+	// Here m only ever reaches sha512, in round 3's h = H(R || A || M) and in
+	// the SSID pre-image; it is never a scalar. Importing that guard would
+	// reject honest input: any message longer than 32 bytes exceeds N once
+	// read as a big.Int, and m == 0 is unambiguous whenever fullBytesLen is
+	// set, since FillBytes preserves the leading zeros. Do not "complete" this
+	// check by analogy with the ECDSA one.
 	if round.temp.m.Sign() < 0 {
 		return round.WrapError(errors.New("message to sign is negative"))
 	}

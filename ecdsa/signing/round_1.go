@@ -48,6 +48,11 @@ func (round *round1) Start() *tss.Error {
 	// range change the shape of the share computed in round 5 and are not
 	// rejected anywhere downstream, so the membership test has to be complete
 	// at this point.
+	//
+	// This is a Zq-membership test because m is a scalar on this curve: round 5
+	// computes m*k and m*k + rx*sigma, round 7 computes -m mod N. The EdDSA
+	// side deliberately has no counterpart -- there m only feeds a hash -- so
+	// this guard must not be propagated there. See eddsa/signing/round_1.go.
 	if round.temp.m.Sign() <= 0 || round.temp.m.Cmp(round.Params().EC().Params().N) >= 0 {
 		return round.WrapError(errors.New("hashed message is not valid"))
 	}
