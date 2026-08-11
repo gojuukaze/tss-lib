@@ -315,7 +315,10 @@ func assertDistinctIDsModQ(ec elliptic.Curve, ids []*PartyID) {
 	q := ec.Params().N
 	seen := make(map[string]string, len(ids))
 	for _, id := range ids {
-		if id == nil || id.KeyInt() == nil {
+		// Test the embedded pointer, not `id.KeyInt() == nil` -- see partyKeyID
+		// above for why that test both faults on the value it means to skip and
+		// can never be true.
+		if id == nil || id.MessageWrapper_PartyID == nil {
 			continue
 		}
 		residueBig := new(big.Int).Mod(id.KeyInt(), q)

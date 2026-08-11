@@ -75,8 +75,15 @@ func (pid PartyID) String() string {
 func SortPartyIDs(ids UnSortedPartyIDs, startAt ...int) SortedPartyIDs {
 	seen := make(map[string]struct{}, len(ids))
 	for _, id := range ids {
-		if id == nil || id.KeyInt() == nil {
-			panic(fmt.Errorf("SortPartyIDs: nil PartyID or nil key"))
+		// `id.KeyInt() == nil` looks like the right test and is two things wrong.
+		// KeyInt is promoted through the embedded *MessageWrapper_PartyID, so
+		// evaluating it faults on precisely the malformed PartyID this line means
+		// to reject -- turning an intended, attributable panic into a raw nil
+		// dereference. And it can never be true anyway: KeyInt is
+		// `new(big.Int).SetBytes(mpid.Key)`, and SetBytes(nil) yields 0, not nil.
+		// Test the embedded pointer, the same way ValidateBasic does.
+		if id == nil || id.MessageWrapper_PartyID == nil {
+			panic(fmt.Errorf("SortPartyIDs: nil PartyID or nil embedded PartyID"))
 		}
 		keyHex := id.KeyInt().Text(16)
 		if _, exists := seen[keyHex]; exists {
