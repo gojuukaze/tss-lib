@@ -65,7 +65,12 @@ type (
 )
 
 // Exported, used in `tss` client
-// The `key` is read from and/or written to depending on whether this party is part of the old or the new committee.
+// The `key` is READ FROM and never written to. An old-committee party works on
+// a deep copy of `key.LocalSecrets`, so nothing this library does reaches the
+// caller's own save data. The copy is not total: LocalPreParams (PaillierSK,
+// NTildei, H1i, H2i, Alpha, Beta, P, Q) is still shared with the caller.
+// This library does not erase your pre-re-share secret -- and could not time it
+// if it did. See doc/maintenance-invariants.md section 7.
 // You may optionally generate and set the LocalPreParams if you would like to use pre-generated safe primes and Paillier secret.
 // (This is similar to providing the `optionalPreParams` to `keygen.LocalParty`).
 func NewLocalParty(

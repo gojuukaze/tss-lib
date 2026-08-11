@@ -104,6 +104,90 @@ case. It is retained deliberately, as the record of what this rule replaces.
 
 ---
 
+## 7. `keygen.BuildLocalSaveDataSubset` — the deep copy is load-bearing
+
+`BuildLocalSaveDataSubset` deep-copies `LocalSecrets` rather than assigning it.
+Both curves. It looks like an avoidable allocation of two `big.Int`s per party,
+and it is not.
+
+`LocalSecrets` holds `Xi` and `ShareID` as `*big.Int`. A struct assignment copies
+the pointers, so the returned value would share the caller's numbers. Re-sharing
+round 5 then does `round.input.Xi.SetInt64(0)` on the old-committee path — which,
+through a shared pointer, sets the caller's own share to zero. That was the
+behaviour before this copy existed: a caller that handed its save data to
+`resharing.NewLocalParty` and kept using it afterwards found its share had become
+0, with nothing in the API saying so.
+
+Two things follow, and both matter to whoever reads this next.
+
+- **If you remove the copy, the library silently starts destroying caller memory
+  again, and no test in this tree will fail.** The library's own tests never
+  inspect the caller's copy after a run; they read the new save data off the `end`
+  channel. The regression is invisible from inside.
+- **The copy is deliberately partial, and `LocalSecrets` is the whole of it.**
+  Everything else in the returned value is the caller's: `LocalPreParams` is
+  assigned as a struct (`PaillierSK`, `NTildei`, `H1i`, `H2i`, `Alpha`, `Beta`,
+  `P`, `Q`), the public key is the caller's pointer, and the per-party slices
+  (`Ks`, `NTildej`, `H1j`, `H2j`, `BigXj`, `PaillierPKs`; on EdDSA `Ks` and
+  `BigXj`) are freshly allocated but hold the caller's pointers. None of it is
+  secret material, which is why only `LocalSecrets` is copied. If you add code
+  that writes through any of it, extend the copy first.
+
+### The line in round 5 is not an erasure, and never was
+
+`round_5_new_step_3.go` still does `round.input.Xi.SetInt64(0)` on the
+old-committee path, and it is worth knowing exactly what that does, because the
+name suggests more than the operation delivers.
+
+`big.Int` is `{neg bool; abs []Word}`. `SetInt64(0)` truncates `abs` to length
+zero. **The backing array keeps every word.** The value reads as `0` through
+`Sign()` and `String()`, and the secret is still sitting in that allocation,
+recoverable by anything that reaches the array. Measured on a 256-bit share: four
+words before, the same four words after, `Sign() == 0`.
+
+That is not a defect in this library so much as a property of the container. Go
+offers no guaranteed way to erase a secret:
+
+- there is no `explicit_bzero` equivalent in the standard library, and nothing
+  forbids the compiler from eliminating a store whose result is never read;
+- `big.Int` arithmetic reallocates its backing `nat`, so earlier copies of a
+  secret are strewn through freed heap memory that no caller has a handle on;
+- goroutine stacks are grown by copying, so a secret that lived on one may be
+  left behind in the old stack;
+- there is no `mlock`, so secrets can reach swap or a core dump.
+
+This is the reason the standard library moved `crypto/ecdsa` and
+`crypto/elliptic` off `big.Int` onto fixed-size byte arrays. If real erasure ever
+becomes a requirement here, it needs a different container, not a different call
+— and that is a larger change than this note.
+
+So, plainly: **no part of this library erases a party's pre-re-share secret.**
+The one line that looks like it does, does not. And even if it did, it could not
+be timed correctly — an old-committee party reaches round 5 on the new
+committee's round-4 ACKs, which are sent before the new committee persists
+anything, so "erase once the re-share succeeded" is not a thing round 5 knows.
+Erasing is the caller's decision, the caller's timing, and the caller's container.
+
+The same misunderstanding is already in the tree elsewhere. Three sites, all of
+them a pointer assignment to the package-level `var zero = big.NewInt(0)`
+singleton, none of them touching the `big.Int` the name used to refer to:
+
+- `ecdsa/keygen/round_1.go:62` — `ui = zero // clears the secret data from memory`
+- `eddsa/keygen/round_1.go:80` — the same line, same comment
+- `ecdsa/signing/round_5.go:84-85` — `round.temp.w = zero` / `round.temp.k = zero`,
+  under `// clear temp.w and temp.k from memory, lint ignore`
+
+All three are left as found; they are noted here so the next reader does not take
+them as precedent, and so that "fixing" them is understood to require changing the
+container rather than the call.
+
+One nearby line is *not* an instance and should not be swept up with them:
+`crypto/vss/feldman_vss.go:183` `secret = zero` is the identity element being
+loaded into an accumulator immediately before the Lagrange sum loop, not an
+attempt to erase anything.
+
+---
+
 ## Implementation note: signing round 2 is not seed-deterministic
 
 `ecdsa/signing/round_2.go` runs `BobMid` and `BobMidWC` in two concurrent
