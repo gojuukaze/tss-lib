@@ -30,6 +30,14 @@ const (
 		"(DGRound1Message.ValidateBasic does not require the ssid field)"
 	ssidNotUnanimousErrText = "round 2: the old committee's ssid declarations are not unanimous"
 	ssidMissingErrText      = "round 2: an old committee round-1 message is missing or of the wrong type"
+	// The new committee cannot recompute the old committee's ssid -- its
+	// pre-image is the OLD save data. This is the one value in the round-1
+	// message it can check against something of its own.
+	sessionNonceMismatchErrText = "round 2: an old committee member declared a session " +
+		"nonce hash that does not match this party's own session nonce; the two " +
+		"committees are not in the same session"
+	sessionNonceMissingErrText = "round 2: this party has no session nonce, so it cannot " +
+		"check that the old committee is in the same session; call Parameters.SetSessionNonce"
 )
 
 // oldSSIDUnanimous returns the ssid that the WHOLE old committee declared, or an
@@ -64,6 +72,14 @@ const (
 // Callers get []byte, *tss.Error — not error — because a *tss.Error already
 // carries the round, the victim and the culprit list.
 func (round *round2) oldSSIDUnanimous() ([]byte, *tss.Error) {
+	// This party's own expectation, derived from its OWN Parameters -- never
+	// from anything on the wire.
+	nonce := round.Params().SessionNonce()
+	if nonce == nil || nonce.Sign() <= 0 {
+		return nil, round.WrapError(errors.New(sessionNonceMissingErrText))
+	}
+	want := sessionNonceHash(nonce)
+
 	oldIDs := round.OldParties().IDs()
 	declared := make([][]byte, len(oldIDs))
 	for j := range oldIDs {
@@ -76,6 +92,14 @@ func (round *round2) oldSSIDUnanimous() ([]byte, *tss.Error) {
 		r1msg, ok := msg.Content().(*DGRound1Message)
 		if !ok {
 			return nil, round.WrapError(errors.New(ssidMissingErrText), msg.GetFrom())
+		}
+		// Check the session binding BEFORE anything is adopted. This is the
+		// whole point of the field: unanimity below compares the old committee's
+		// declarations only to EACH OTHER, so a complete transcript captured
+		// from another session is unanimous with itself and passes.
+		// Single-message-visible => name the sender, per this function's rule.
+		if !bytes.Equal(r1msg.UnmarshalSessionNonceHash(), want) {
+			return nil, round.WrapError(errors.New(sessionNonceMismatchErrText), msg.GetFrom())
 		}
 		ssidJ := r1msg.UnmarshalSSID()
 		if len(ssidJ) == 0 {

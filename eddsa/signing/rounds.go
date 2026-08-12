@@ -122,6 +122,15 @@ func (round *base) getSSID() ([]byte, error) {
 	ssidList = append(ssidList, big.NewInt(int64(round.number))) // round number
 	ssidList = append(ssidList, round.temp.ssidNonce)            // caller-supplied session nonce
 	ssidList = append(ssidList, round.temp.m)                    // message being signed
+	// fullBytesLen decides what is actually signed: with it set, the message is
+	// written as a fixed-length string (FillBytes, leading zeros preserved);
+	// without it, as m.Bytes(). SHA512_256i hashes magnitudes only, so `m` alone
+	// cannot separate those two -- two executions differing ONLY in
+	// fullBytesLen used to share an SSID while binding different byte strings,
+	// which made every proof under that SSID transferable between them. It is
+	// also a per-party argument that no message carries and nothing compares, so
+	// binding it here is what makes a disagreement observable at all.
+	ssidList = append(ssidList, big.NewInt(int64(round.temp.fullBytesLen))) // message encoding width
 	ssid := common.SHA512_256i(ssidList...).Bytes()
 
 	return ssid, nil
