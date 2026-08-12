@@ -8,7 +8,12 @@ package resharing
 
 import (
 	"math/big"
+	"strings"
 	"testing"
+
+	"github.com/bnb-chain/tss-lib/v4/ecdsa/keygen"
+	"github.com/bnb-chain/tss-lib/v4/tss"
+	"github.com/btcsuite/btcd/btcec/v2"
 )
 
 // The new committee cannot recompute the old committee's ssid: its pre-image is
@@ -48,5 +53,32 @@ func TestDGRound1MessageRequiresSessionNonceHash(t *testing.T) {
 	}
 	if missing.ValidateBasic() {
 		t.Fatal("a message with no session nonce hash must be rejected")
+	}
+}
+
+// A party that never set a session nonce must be told so in round 1, before it
+// has exchanged anything -- not in round 2, after a full round of messages, when
+// it discovers it has nothing to compare the old committee's declaration
+// against. The requirement is the same for both roles, so it is checked in one
+// place for both; this test covers the NEW-committee side, which is the side
+// that used to get all the way to round 2.
+func TestNewCommitteePartyWithoutNonceFailsInRoundOne(t *testing.T) {
+	oldIDs := tss.GenerateTestPartyIDs(2)
+	newIDs := tss.GenerateTestPartyIDs(2, 2)
+	params := tss.NewReSharingParameters(btcec.S256(), tss.NewPeerContext(oldIDs),
+		tss.NewPeerContext(newIDs), newIDs[0], 2, 1, 2, 1) // deliberately no SetSessionNonce
+	out := make(chan tss.Message, 16)
+	end := make(chan *keygen.LocalPartySaveData, 4)
+	p := NewLocalParty(params, keygen.NewLocalPartySaveData(2), out, end).(*LocalParty)
+
+	err := p.FirstRound().Start()
+	if err == nil {
+		t.Fatal("expected round 1 to refuse a party with no session nonce")
+	}
+	if err.Round() != 1 {
+		t.Fatalf("expected the refusal in round 1, got round %d: %v", err.Round(), err)
+	}
+	if !strings.Contains(err.Cause().Error(), "requires a session nonce") {
+		t.Fatalf("unexpected cause: %v", err.Cause())
 	}
 }

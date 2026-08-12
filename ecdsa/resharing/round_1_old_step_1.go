@@ -67,13 +67,17 @@ func (round *round1) Start() *tss.Error {
 	round.resetOK() // resets both round.oldOK and round.newOK
 	round.allNewOK()
 
-	if !round.ReSharingParams().IsOldCommittee() {
-		return nil
-	}
-	round.allOldOK()
-
-	// Require caller-provided SessionNonce — see ecdsa/keygen/round_1.go
-	// for full rationale (applies to resharing too).
+	// EVERY party needs the session nonce, not just the old committee, and it is
+	// required HERE so that a party which lacks it fails before it has exchanged
+	// anything.
+	//
+	// The old committee needs it to derive the ssid. The new committee needs it
+	// to CHECK what the old committee declares -- it cannot derive the ssid
+	// itself, because getSSID's pre-image is the old committee's save data. That
+	// check lives in round 2, but requiring the nonce there would mean a
+	// misconfigured new party gets a full round of messages in before anything
+	// tells it that it was never going to be able to compare. The requirement is
+	// the same for both roles, so it is stated once, in one place, for both.
 	if nonce := round.Params().SessionNonce(); nonce != nil {
 		// See ecdsa/keygen/round_1.go: the SSID hash takes Bytes(), the
 		// magnitude only, so -n and +n collide and 0 is one constant for
@@ -87,6 +91,12 @@ func (round *round1) Start() *tss.Error {
 			"resharing requires a session nonce; call Parameters.SetSessionNonce " +
 				"with a value agreed by all parties before starting the round"))
 	}
+
+	if !round.ReSharingParams().IsOldCommittee() {
+		return nil
+	}
+	round.allOldOK()
+
 	ssid, err := round.getSSID()
 	if err != nil {
 		return round.WrapError(err)

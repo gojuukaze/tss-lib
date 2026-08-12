@@ -74,6 +74,13 @@ const (
 func (round *round2) oldSSIDUnanimous() ([]byte, *tss.Error) {
 	// This party's own expectation, derived from its OWN Parameters -- never
 	// from anything on the wire.
+	//
+	// The nil/non-positive branch is defence in depth: round 1 already requires
+	// a positive nonce from EVERY party, old committee or new, before any
+	// message is sent, so a party reaching round 2 without one has had its
+	// Parameters mutated in between. Failing here rather than proceeding is
+	// still the right answer -- without a nonce there is nothing to compare the
+	// old committee's declaration against.
 	nonce := round.Params().SessionNonce()
 	if nonce == nil || nonce.Sign() <= 0 {
 		return nil, round.WrapError(errors.New(sessionNonceMissingErrText))
