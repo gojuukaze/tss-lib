@@ -130,6 +130,19 @@ func NewProof(Session []byte, N, P, Q *big.Int, rand io.Reader) (*ProofMod, erro
 	Phi := new(big.Int).Mul(new(big.Int).Sub(P, one), new(big.Int).Sub(Q, one))
 	// Fig 16.1
 	W := common.GetRandomQuadraticNonResidue(rand, N)
+	// The verifier has checked the shape of N since it was written; the prover
+	// never has. An N with no quadratic non-residue at all — nil, ≤ 1, even, or
+	// a perfect square — used to leave the sampler above retrying an acceptance
+	// test it cannot pass, and this function is called from keygen round 2 and
+	// resharing round 2 with the party mutex held, where not returning means the
+	// party is gone for good and its host is told nothing. Fail here instead.
+	//
+	// This deliberately does not import the rest of Verify's window (the
+	// 2048-bit floor, the compositeness test): those reject proofs, not provers,
+	// and a caller proving over a modulus of its own choosing is served today.
+	if W == nil {
+		return nil, fmt.Errorf("modproof: N has no quadratic non-residue to sample; it must be odd, > 1 and not a perfect square")
+	}
 
 	// Fig 16.2: Y_i ~ Z_N derived via expand-then-reject sampling so the
 	// support set matches the paper's `Y <- Z_N` assumption rather than

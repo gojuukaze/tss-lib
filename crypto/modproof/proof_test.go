@@ -204,3 +204,43 @@ func TestAttackMod(test *testing.T) {
 	ok := proof.Verify(Session, N)
 	assert.Falsef(test, ok, "false proof should not verify")
 }
+
+// NewProof samples its W from GetRandomQuadraticNonResidue, which has nothing
+// to return when N is a perfect square: Jacobi(w, m²) = Jacobi(w, m)² is never
+// -1, so the sampler's acceptance probability is exactly zero. NewProof is
+// called from keygen round 2 while the party mutex is held, so it has to come
+// back with an error rather than park there.
+func TestNewProofRejectsAModulusItCannotSampleFor(test *testing.T) {
+	// m², for m the first prime above 3·2^1022: an odd, composite, 2048-bit
+	// modulus that clears every check Verify makes. P·Q = N holds too, so the
+	// only thing wrong with it is the shape of N.
+	m, ok := new(big.Int).SetString("c0000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000013f7", 16)
+	assert.True(test, ok)
+	N := new(big.Int).Mul(m, m)
+	assert.Equal(test, 2048, N.BitLen())
+
+	type result struct {
+		proof *ProofMod
+		err   error
+	}
+	done := make(chan result, 1)
+	go func() {
+		defer func() {
+			if r := recover(); r != nil {
+				test.Errorf("NewProof panicked: %v", r)
+				done <- result{}
+			}
+		}()
+		proof, err := NewProof(Session, N, m, m, rand.Reader)
+		done <- result{proof, err}
+	}()
+	// The goroutine is abandoned on timeout rather than joined: before the fix
+	// it spins in the sampler and would hang `go test` itself.
+	select {
+	case got := <-done:
+		assert.Error(test, got.err, "must reject a modulus it cannot sample a non-residue for")
+		assert.Nil(test, got.proof)
+	case <-time.After(20 * time.Second):
+		test.Fatal("NewProof must return rather than sample forever")
+	}
+}
