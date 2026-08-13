@@ -21,6 +21,32 @@ const (
 	// Minimum modulus bit length accepted by Verify. Matches the keygen/
 	// resharing wire-format checks for NTilde (paillierBitsLen = 2048).
 	verifyMinModulusBitLen = 2048
+	// Maximum modulus bit length accepted by Verify.
+	//
+	// DERIVATION. sampleYModN below expands the Fiat-Shamir seed in 256-bit
+	// blocks -- `blocks := (bitLen + 255) / 256` -- and separates the blocks
+	// with a ONE-BYTE tag, `[]byte{byte(j)}`. That tag has 256 distinct values,
+	// so the blocks are distinct PRF evaluations only while blocks <= 256; at
+	// blocks == 257 the tag wraps and block 256 repeats block 0 byte for byte.
+	//   blocks <= 256  <=>  (bitLen + 255) / 256 <= 256  <=>  bitLen <= 65536.
+	// Above that the sampler is outside the domain it is written for: the
+	// expansion buffer becomes a repetition of an 8 KiB pattern instead of a
+	// PRF stream, and Y is no longer the value the derivation claims. Verify
+	// declines rather than deriving a Y it cannot justify.
+	//
+	// The same bound is what caps allocation, which had a floor but no ceiling:
+	// N arrives from a caller (via the exported Verify) or off the wire as
+	// SetBytes of one protobuf field, and the mask, the expansion buffer and
+	// every one of the Iterations candidates are each O(bitLen). A 65537-bit
+	// modulus measured 8.2 GiB of allocation and 14s in one Verify call.
+	//
+	// It excludes nothing this library can produce. keygen and resharing pin a
+	// peer's modulus to EXACTLY paillierBitsLen = 2048 before any proof is
+	// verified (ecdsa/keygen/round_2.go, ecdsa/resharing/round_4_new_step_2.go),
+	// verifyMinModulusBitLen is that same 2048, and this ceiling is 32x it. A
+	// caller choosing their own size through paillier.GenerateKeyPair would
+	// need a pair of safe primes above 32768 bits to reach it.
+	verifyMaxModulusBitLen = 65536
 	// Miller-Rabin rounds for the composite check; 30 gives ≤4^-30
 	// false-positive rate against arbitrary composites.
 	verifyPrimalityRounds = 30
@@ -48,6 +74,10 @@ func fsSession(Session []byte) []byte {
 // `Y <- Z_N` distribution the paper's formal analysis assumes; the
 // expand-then-reject sampler closes that gap. Wire-incompat with v3 by
 // design — consumed by the v4 module bump.
+//
+// Defined for N.BitLen() <= verifyMaxModulusBitLen only: the block tag below
+// is a single byte, so past that width the blocks stop being distinct. Verify
+// enforces the window; see the constant for the derivation.
 func sampleYModN(Session []byte, N *big.Int, transcript []*big.Int) *big.Int {
 	seedBig := common.SHA512_256i_TAGGED(fsSession(Session), transcript...)
 	// Pad the seed to a fixed 32-byte width so the counter mixing below
@@ -218,8 +248,13 @@ func (pf *ProofMod) Verify(Session []byte, N *big.Int) bool {
 	// RejectionSample loops forever on N <= 1, so the original ordering
 	// (which only checked oddness/compositeness at line ~192) left a panic
 	// surface reachable from a malformed message.
+	//
+	// The bit-length window is tested before ProbablyPrime deliberately: that
+	// call is 30 modexps over N, so it is itself one of the things an oversized
+	// N would buy.
 	if N == nil || N.Sign() != 1 || N.Bit(0) == 0 ||
-		N.BitLen() < verifyMinModulusBitLen || N.ProbablyPrime(verifyPrimalityRounds) {
+		N.BitLen() < verifyMinModulusBitLen || N.BitLen() > verifyMaxModulusBitLen ||
+		N.ProbablyPrime(verifyPrimalityRounds) {
 		return false
 	}
 	if isQuadraticResidue(pf.W, N) {
