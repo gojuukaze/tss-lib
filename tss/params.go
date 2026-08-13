@@ -335,11 +335,28 @@ func assertDistinctIDsModQ(ec elliptic.Curve, ids []*PartyID) {
 	}
 }
 
+// The old committee lives in the EMBEDDED *Parameters, so every "Old" reader
+// below goes through a promoted field or method and dereferences that pointer.
+// Nothing sets it: `ReSharingParameters{}` and `json.Unmarshal("{}", &rp)` both
+// leave it nil, and NewReSharingParameters is not on either path. The "New"
+// readers need no such guard -- newParties / newPartyCount / newThreshold are
+// ReSharingParameters' own fields.
+//
+// An absent *Parameters describes no old committee at all, so each reader
+// answers the way the rest of the package already answers for an undescribed
+// committee: no roster (PeerContext.IDs on a nil context), and a count of zero.
+
 func (rgParams *ReSharingParameters) OldParties() *PeerContext {
+	if rgParams.Parameters == nil {
+		return nil
+	}
 	return rgParams.Parties() // wr use the original method for old parties
 }
 
 func (rgParams *ReSharingParameters) OldPartyCount() int {
+	if rgParams.Parameters == nil {
+		return 0
+	}
 	return rgParams.partyCount
 }
 
@@ -365,6 +382,11 @@ func (rgParams *ReSharingParameters) OldAndNewPartyCount() int {
 
 // isInCommittee reports whether this party's key appears in the given roster.
 //
+// rgParams.partyID is itself a promoted field, so this has the same nil
+// embedded *Parameters exposure as the "Old" readers above and needs the same
+// guard: a party the caller never described matches nobody, which is the
+// answer already given for a PartyID whose key cannot be read.
+//
 // Nothing validates rgParams.partyID or either PeerContext at construction time:
 // NewParameters checks partyCount, threshold and the roster's residues, but it
 // never looks at partyID, and it stores a nil context unconditionally. The
@@ -378,6 +400,9 @@ func (rgParams *ReSharingParameters) OldAndNewPartyCount() int {
 // partyKeyID reads -- so this agrees with the previous KeyInt().Cmp comparison
 // on every well-formed input, and simply declines to fault on the rest.
 func (rgParams *ReSharingParameters) isInCommittee(ctx *PeerContext) bool {
+	if rgParams.Parameters == nil {
+		return false
+	}
 	self, ok := partyKeyID(rgParams.partyID)
 	if !ok {
 		return false
@@ -391,7 +416,9 @@ func (rgParams *ReSharingParameters) isInCommittee(ctx *PeerContext) bool {
 }
 
 func (rgParams *ReSharingParameters) IsOldCommittee() bool {
-	return rgParams.isInCommittee(rgParams.parties)
+	// Via OldParties(), not the promoted `parties` field: the argument is
+	// evaluated before isInCommittee's own guard can run.
+	return rgParams.isInCommittee(rgParams.OldParties())
 }
 
 func (rgParams *ReSharingParameters) IsNewCommittee() bool {
