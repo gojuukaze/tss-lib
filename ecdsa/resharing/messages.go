@@ -147,7 +147,20 @@ func (m *DGRound2Message1) ValidateBasic() bool {
 		!common.NonEmptyBytes(m.H2) ||
 		// expected len of dln proof = sizeof(int64) + len(alpha) + len(t)
 		!common.NonEmptyMultiBytes(m.GetDlnproof_1(), 2+(dlnproof.Iterations*2)) ||
-		!common.NonEmptyMultiBytes(m.GetDlnproof_2(), 2+(dlnproof.Iterations*2)) {
+		!common.NonEmptyMultiBytes(m.GetDlnproof_2(), 2+(dlnproof.Iterations*2)) ||
+		// nTildeModProof is declared "Not optional" in
+		// protob/ecdsa-resharing.proto and round_4_new_step_2.go already treats
+		// a missing/unparseable proof as a culprit that aborts the round
+		// (SRC-2026-926 removed the NoProofMod fallback). The message layer did
+		// not hold up its end: an all-empty field passed here and only failed
+		// three rounds later.
+		//
+		// This predicate is byte-for-byte the one modproof.NewProofFromBytes
+		// applies (NonEmptyMultiBytes with the same ProofModBytesParts arity),
+		// so it accepts exactly the proofs UnmarshalNTildeModProof can decode.
+		// It therefore moves the rejection earlier without changing which
+		// messages are rejected.
+		!common.NonEmptyMultiBytes(m.GetNTildeModProof(), modproof.ProofModBytesParts) {
 		return false
 	}
 	// Align with keygen's bitlen floor at the message-decode layer.
