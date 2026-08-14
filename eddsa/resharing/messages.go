@@ -60,18 +60,28 @@ func NewDGRound1Message(
 	return tss.NewMessage(meta, content, msg)
 }
 
+// sessionDigestMaxBytes bounds the two SHA512_256-derived fields below. Both are
+// produced as common.SHA512_256i(...).Bytes(), a 32-byte digest with leading
+// zeroes dropped, so 32 is the exact upper bound a conforming sender can reach
+// and not a guess. It matters because neither field had one: the ssid is adopted
+// into round.temp.ssid, so its declared length is a length this party carries.
+const sessionDigestMaxBytes = 32
+
 // ValidateBasic requires SessionNonceHash. An absent hash is exactly what a
 // transcript recorded before this field existed carries, and it must not be
-// laundered into "nothing to compare" by round 2. Ssid is deliberately NOT
-// required here: round 2 tests it for length itself, so that an empty
-// declaration is rejected with an ssid-specific error that names the sender
-// rather than being dropped by the message layer with no attribution.
+// laundered into "nothing to compare" by round 2. Ssid is deliberately not
+// required to be non-empty here: round 2 tests it for length itself, so that an
+// empty declaration is rejected with an ssid-specific error that names the
+// sender rather than being dropped by the message layer with no attribution.
+// Both fields are bounded from above regardless.
 func (m *DGRound1Message) ValidateBasic() bool {
 	return m != nil &&
 		common.NonEmptyBytes(m.EddsaPubX) &&
 		common.NonEmptyBytes(m.EddsaPubY) &&
 		common.NonEmptyBytes(m.VCommitment) &&
-		common.NonEmptyBytes(m.SessionNonceHash)
+		common.NonEmptyBytes(m.SessionNonceHash) &&
+		len(m.SessionNonceHash) <= sessionDigestMaxBytes &&
+		len(m.Ssid) <= sessionDigestMaxBytes
 }
 
 func (m *DGRound1Message) UnmarshalSSID() []byte {

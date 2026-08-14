@@ -114,6 +114,16 @@ func BuildLocalSaveDataSubset(sourceData LocalPartySaveData, sortedIDs tss.Sorte
 	newData.LocalSecrets = copyLocalSecrets(sourceData.LocalSecrets)
 	newData.ECDSAPub = sourceData.ECDSAPub
 	for j, id := range sortedIDs {
+		// `id.Key` is a PROMOTED field: reading it dereferences the embedded
+		// *MessageWrapper_PartyID, which is nil in the PartyID shapes that
+		// encoding/json and a shallow copy produce. Attribute that here instead
+		// of faulting one expression later with no message: this function has no
+		// return channel, and an unresolvable roster entry already panics with a
+		// named error just below, so a roster entry that cannot be read at all
+		// belongs in the same place.
+		if id == nil || id.MessageWrapper_PartyID == nil {
+			panic(errors.New("BuildLocalSaveDataSubset: a party in the given roster has no PartyID content"))
+		}
 		savedIdx, ok := keysToIndices[hex.EncodeToString(id.Key)]
 		if !ok {
 			panic(errors.New("BuildLocalSaveDataSubset: unable to find a signer party in the local save data"))

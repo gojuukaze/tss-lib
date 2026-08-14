@@ -270,14 +270,28 @@ func (pf *ProofMod) Verify(Session []byte, N *big.Int) bool {
 		N.ProbablyPrime(verifyPrimalityRounds) {
 		return false
 	}
-	if isQuadraticResidue(pf.W, N) {
-		return false
-	}
+	// W is range-checked BEFORE isQuadraticResidue, not after. Nothing upstream
+	// bounds its size: NewProofFromBytes checks the number of parts, never the
+	// size of one, and KGRound2Message2.ValidateBasic does not look at the proof
+	// at all. big.Jacobi reduces its argument modulo N first, so its cost grows
+	// with the size of W while these comparisons do not, and a W that was never
+	// going to be accepted was being reduced before it was measured.
+	//
+	// The accept set is unchanged: a W outside (0, N) was rejected by this pair
+	// of conditions either way. Only the order changed, and with it the cost of
+	// saying no -- measured at 38 ms against 2.5 ms for an 8 MB W in
+	// TestRejectingAnOutOfRangeWDoesNotDependOnItsSize.
+	//
+	// How much that is worth depends on how large a message the host lets
+	// through, which is not decided in this library.
 	if pf.W.Sign() != 1 || pf.W.Cmp(N) != -1 {
 		return false
 	}
 	gcd := new(big.Int).GCD(nil, nil, pf.W, N)
 	if gcd.Cmp(one) != 0 {
+		return false
+	}
+	if isQuadraticResidue(pf.W, N) {
 		return false
 	}
 	for i := range pf.Z {

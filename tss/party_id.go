@@ -62,7 +62,20 @@ func NewPartyID(id, moniker string, key *big.Int) *PartyID {
 	}
 }
 
+// String is the one method on this type that must never fault. `pid.Moniker` is
+// a PROMOTED field, so reading it dereferences the embedded pointer, and the
+// PartyID shapes that encoding/json and a shallow copy produce leave that
+// pointer nil. A diagnostic that panics while something is being diagnosed
+// removes the diagnosis; note that a direct call is what faults, since fmt
+// recovers a panicking String method and prints %!v(PANIC=...) instead.
+//
+// It answers with a marker rather than attributing a panic — the opposite of
+// what crypto.ECPoint.X() does — because there is no return channel here and
+// nothing downstream branches on the text.
 func (pid PartyID) String() string {
+	if pid.MessageWrapper_PartyID == nil {
+		return fmt.Sprintf("{%d,<no PartyID content>}", pid.Index)
+	}
 	return fmt.Sprintf("{%d,%s}", pid.Index, pid.Moniker)
 }
 

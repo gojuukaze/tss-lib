@@ -72,14 +72,27 @@ func (round *round3) Start() *tss.Error {
 			KGCj := round.temp.KGCs[j]
 			r2msg2 := round.temp.kgRound2Message2s[j].Content().(*KGRound2Message2)
 			KGDj := r2msg2.UnmarshalDeCommitment()
-			cmtDeCmt := commitments.HashCommitDecommit{C: KGCj, D: KGDj}
-			ok, flatPolyGs := cmtDeCmt.DeCommit()
 			// SECURITY (SRC-2026-925): enforce the exact decommitment length.
 			// ECDSA reaches PjVs via PjShare.Verify (which checks len) and the
 			// later Vc[c].Add(PjVs[c]) indexing; guarding here keeps the path
 			// uniform with the EdDSA fix and rejects a short/empty decommitment
 			// (e.g. a 1-element [r]) before any out-of-range indexing.
-			if !ok || flatPolyGs == nil || len(flatPolyGs) != (round.Threshold()+1)*2 {
+			//
+			// It runs BEFORE DeCommit, which hashes every part it is handed, and
+			// nothing upstream bounds how many arrive: ValidateBasic calls
+			// NonEmptyMultiBytes with no expected length and cannot supply one,
+			// because the length is a function of the threshold and the message
+			// layer does not know it. Here the threshold IS known, so this is
+			// both the exact bound and the cheap place for it. The accept set is
+			// unchanged -- D[0] is the commitment randomness, so a payload of
+			// (t+1)*2 is exactly (t+1)*2+1 parts on the wire.
+			if len(KGDj) != (round.Threshold()+1)*2+1 {
+				ch <- vssOut{errors.New("de-commitment verify failed"), nil}
+				return
+			}
+			cmtDeCmt := commitments.HashCommitDecommit{C: KGCj, D: KGDj}
+			ok, flatPolyGs := cmtDeCmt.DeCommit()
+			if !ok || flatPolyGs == nil {
 				ch <- vssOut{errors.New("de-commitment verify failed"), nil}
 				return
 			}
@@ -89,11 +102,19 @@ func (round *round3) Start() *tss.Error {
 				return
 			}
 			// SECURITY (SRC-2026-926): ModProof verification is mandatory.
-			// A missing or invalid Paillier ModProof is a hard reject — it is
-			// the only check that proves N is a true biprime (no small
-			// factors); without it a smooth/factorable modulus enables MtA
-			// key-share extraction. The NoProofMod compatibility bypass was
-			// removed.
+			// A missing or invalid Paillier ModProof is a hard reject. The
+			// NoProofMod compatibility bypass was removed.
+			//
+			// What it attests is the Blum-integer shape of N — N ≡ 1 mod 4 and a
+			// product of exactly two prime powers — and that is all
+			// ProofMod.Verify(Session, N) (crypto/modproof/proof.go#Verify) can
+			// attest, because N is its only statement input. It is NOT the only
+			// check on this modulus, and it does not establish the absence of
+			// small factors: that is FacProof's statement
+			// (crypto/facproof/proof.go#Verify), verified below in this same
+			// handler and likewise unconditional since the NoProofFac switch was
+			// removed. Naming one check "the only" one is the kind of claim this
+			// file cannot support about a codebase it does not enumerate.
 			modProof, err := r2msg2.UnmarshalModProof()
 			if err != nil {
 				ch <- vssOut{errors.New("modProof verify failed"), nil}

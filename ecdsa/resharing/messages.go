@@ -66,6 +66,15 @@ func NewDGRound1Message(
 	return tss.NewMessage(meta, content, msg)
 }
 
+// sessionDigestMaxBytes bounds the two SHA512_256-derived fields below. Both are
+// produced as common.SHA512_256i(...).Bytes(), a 32-byte digest with leading
+// zeroes dropped, so 32 is the exact upper bound a conforming sender can reach
+// and not a guess. It matters because neither field had one: the ssid is
+// adopted into round.temp.ssid and then prefixes the Session of every
+// zero-knowledge proof in the run, so its declared length is a length this party
+// re-hashes on each of them.
+const sessionDigestMaxBytes = 32
+
 func (m *DGRound1Message) ValidateBasic() bool {
 	return m != nil &&
 		common.NonEmptyBytes(m.EcdsaPubX) &&
@@ -74,7 +83,13 @@ func (m *DGRound1Message) ValidateBasic() bool {
 		// Required, not optional: an absent hash is exactly what a transcript
 		// captured before this field existed would carry, and it must not be
 		// laundered into "nothing to compare".
-		common.NonEmptyBytes(m.SessionNonceHash)
+		common.NonEmptyBytes(m.SessionNonceHash) &&
+		len(m.SessionNonceHash) <= sessionDigestMaxBytes &&
+		// Upper bound only. Emptiness is deliberately NOT rejected here: round 2
+		// tests it itself so that an empty declaration is refused with an
+		// ssid-specific error naming the sender, instead of being dropped by the
+		// message layer with no attribution.
+		len(m.Ssid) <= sessionDigestMaxBytes
 }
 
 func (m *DGRound1Message) UnmarshalECDSAPub(ec elliptic.Curve) (*crypto.ECPoint, error) {

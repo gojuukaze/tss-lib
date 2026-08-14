@@ -66,6 +66,36 @@ those genuinely is the local party's fault. Widening the predicate past the ring
 would move the error in the opposite direction — naming an innocent counterparty
 — which is the same defect mirrored.
 
+## 2c. Bound a peer's declared size before working on it, not after
+
+Four places check something about a peer-supplied value *after* an operation
+whose cost that value decides. Each reads as harmless, and each has an identical
+accept set before and after the reordering, so no test in this tree goes red if
+one of them is moved back.
+
+- `crypto/modproof/proof.go#Verify` tests `pf.W`'s range before, not after,
+  `isQuadraticResidue`. `NewProofFromBytes` counts parts and never measures one,
+  and `KGRound2Message2.ValidateBasic` does not look at the proof at all, so `W`
+  arrives unbounded; `big.Jacobi` reduces modulo `N` first, so its cost tracks
+  `W`'s size while the comparisons do not. Measured: 38 ms against 2.5 ms for an
+  8 MB `W`.
+- The four `DeCommit()` call sites whose expected length is a function of the
+  threshold — `{ecdsa,eddsa}/keygen/round_3.go` and
+  `{ecdsa,eddsa}/resharing/round_4_new_step_2.go` — check the part count before
+  calling, because `DeCommit` hashes every part it is handed. Measured: 458 ns
+  for 7 parts against 6.6 ms for 200000.
+
+The tempting cleanup is to push these into `ValidateBasic`, where the other 21
+`NonEmptyMultiBytes` call sites state their expected length. **It cannot be done
+for these four.** The length is `(t+1)*2+1` and the message layer does not know
+`t`; `ecdsa/keygen`'s `TestDeCommitmentCountIsNotBoundedByTheMessageLayer` pins
+that so the conclusion "the count is already bounded upstream" cannot be reached
+by reading the message layer alone. The round is the first place that knows the
+bound, which makes it the right place and not a lazy one.
+
+How much any of this is worth depends on the largest message the host accepts,
+which is not decided in this library.
+
 ## 3. `crypto/modproof` — `K = 80` is a security parameter
 
 Eighty iterations of modular exponentiation is the dominant cost of

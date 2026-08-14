@@ -56,6 +56,42 @@ func TestDGRound1MessageRequiresSessionNonceHash(t *testing.T) {
 	}
 }
 
+// Neither field had an upper bound. Both are produced as
+// common.SHA512_256i(...).Bytes(), so 32 is the exact width a conforming sender
+// can reach -- a derived bound rather than a chosen one. It matters for the
+// ssid because round 2 adopts it into round.temp.ssid, so a declared length is a
+// length this party carries.
+func TestDGRound1MessageBoundsTheSessionFields(t *testing.T) {
+	atWidth := func(n int) *DGRound1Message {
+		return &DGRound1Message{
+			EddsaPubX: []byte{1}, EddsaPubY: []byte{2}, VCommitment: []byte{3},
+			Ssid: make([]byte, n), SessionNonceHash: make([]byte, n),
+		}
+	}
+	if !atWidth(sessionDigestMaxBytes).ValidateBasic() {
+		t.Fatal("a full-width digest must still be accepted")
+	}
+	if atWidth(sessionDigestMaxBytes + 1).ValidateBasic() {
+		t.Fatal("one byte more than a digest cannot be one")
+	}
+	if atWidth(1 << 20).ValidateBasic() {
+		t.Fatal("a megabyte declaration must be refused at the message layer")
+	}
+	if len(sessionNonceHash(big.NewInt(1))) > sessionDigestMaxBytes {
+		t.Fatal("the bound must be the one the producer can actually reach")
+	}
+
+	// The ssid's emptiness stays round 2's to report, so that the refusal names
+	// the sender instead of being dropped here with no attribution.
+	empty := &DGRound1Message{
+		EddsaPubX: []byte{1}, EddsaPubY: []byte{2}, VCommitment: []byte{3},
+		SessionNonceHash: []byte{5},
+	}
+	if !empty.ValidateBasic() {
+		t.Fatal("an empty ssid is round 2's to refuse, not this layer's")
+	}
+}
+
 // A party that never set a session nonce must be told so in round 1, before it
 // has exchanged anything -- not in round 2, after a full round of messages, when
 // it discovers it has nothing to compare the old committee's declaration
