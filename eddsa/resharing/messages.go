@@ -37,6 +37,8 @@ func NewDGRound1Message(
 	from *tss.PartyID,
 	eddsaPub *crypto.ECPoint,
 	vct cmt.HashCommitment,
+	ssid []byte,
+	sessionNonceHash []byte,
 ) tss.ParsedMessage {
 	meta := tss.MessageRouting{
 		From:             from,
@@ -48,16 +50,36 @@ func NewDGRound1Message(
 		EddsaPubX:   eddsaPub.X().Bytes(),
 		EddsaPubY:   eddsaPub.Y().Bytes(),
 		VCommitment: vct.Bytes(),
+		Ssid:        ssid,
+		// See the proto comment: the new committee cannot recompute `Ssid`, so
+		// this is the one value in this message it can check against something
+		// of its own.
+		SessionNonceHash: sessionNonceHash,
 	}
 	msg := tss.NewMessageWrapper(meta, content)
 	return tss.NewMessage(meta, content, msg)
 }
 
+// ValidateBasic requires SessionNonceHash. An absent hash is exactly what a
+// transcript recorded before this field existed carries, and it must not be
+// laundered into "nothing to compare" by round 2. Ssid is deliberately NOT
+// required here: round 2 tests it for length itself, so that an empty
+// declaration is rejected with an ssid-specific error that names the sender
+// rather than being dropped by the message layer with no attribution.
 func (m *DGRound1Message) ValidateBasic() bool {
 	return m != nil &&
 		common.NonEmptyBytes(m.EddsaPubX) &&
 		common.NonEmptyBytes(m.EddsaPubY) &&
-		common.NonEmptyBytes(m.VCommitment)
+		common.NonEmptyBytes(m.VCommitment) &&
+		common.NonEmptyBytes(m.SessionNonceHash)
+}
+
+func (m *DGRound1Message) UnmarshalSSID() []byte {
+	return m.GetSsid()
+}
+
+func (m *DGRound1Message) UnmarshalSessionNonceHash() []byte {
+	return m.GetSessionNonceHash()
 }
 
 func (m *DGRound1Message) UnmarshalEDDSAPub(ec elliptic.Curve) (*crypto.ECPoint, error) {

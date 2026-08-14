@@ -9,6 +9,7 @@ package resharing
 import (
 	"errors"
 	"fmt"
+	"math/big"
 
 	"github.com/bnb-chain/tss-lib/v4/crypto"
 	"github.com/bnb-chain/tss-lib/v4/crypto/commitments"
@@ -28,6 +29,12 @@ func newRound1(params *tss.ReSharingParameters, input, save *keygen.LocalPartySa
 // dualRoleErrText is the fixed text of the round-1 dual-role rejection.
 const dualRoleErrText = "this party is in both the old and the new committee; " +
 	"the two committees must be disjoint (re-sharing in place is not a supported configuration)"
+
+// nonPositiveNonceErrText is worded identically at every round-1 site that
+// reads Parameters.SessionNonce().
+const nonPositiveNonceErrText = "session nonce must be positive; call " +
+	"Parameters.SetSessionNonce with a positive value agreed by all parties " +
+	"before starting the round"
 
 // rejectDualRole is defence in depth behind tss.NewReSharingParameters, which
 // refuses a non-empty committee intersection at construction time. That check
@@ -60,11 +67,41 @@ func (round *round1) Start() *tss.Error {
 	round.resetOK() // resets both round.oldOK and round.newOK
 	round.allNewOK()
 
+	// EVERY party needs the session nonce, not just the old committee, and it is
+	// required HERE so that a party which lacks it fails before it has exchanged
+	// anything.
+	//
+	// The old committee needs it to derive the ssid. The new committee needs it
+	// to CHECK what the old committee declares -- it cannot derive the ssid
+	// itself, because getSSID's pre-image is the old committee's save data. That
+	// check lives in round 2, but requiring the nonce there would mean a
+	// misconfigured new party gets a full round of messages in before anything
+	// tells it that it was never going to be able to compare. The requirement is
+	// the same for both roles, so it is stated once, in one place, for both.
+	if nonce := round.Params().SessionNonce(); nonce != nil {
+		// See eddsa/keygen/round_1.go: the SSID hash takes Bytes(), the
+		// magnitude only, so -n and +n collide and 0 is one constant for
+		// every session.
+		if nonce.Sign() <= 0 {
+			return round.WrapError(errors.New(nonPositiveNonceErrText))
+		}
+		round.temp.ssidNonce = new(big.Int).Set(nonce)
+	} else {
+		return round.WrapError(errors.New(
+			"resharing requires a session nonce; call Parameters.SetSessionNonce " +
+				"with a value agreed by all parties before starting the round"))
+	}
+
 	if !round.ReSharingParams().IsOldCommittee() {
 		return nil
 	}
 	round.allOldOK()
 
+	ssid, err := round.getSSID()
+	if err != nil {
+		return round.WrapError(err)
+	}
+	round.temp.ssid = ssid
 	Pi := round.PartyID()
 	i := Pi.Index
 
@@ -99,7 +136,8 @@ func (round *round1) Start() *tss.Error {
 	// 5. "broadcast" C_i to members of the NEW committee
 	r1msg := NewDGRound1Message(
 		round.NewParties().IDs().Exclude(round.PartyID()), round.PartyID(),
-		round.input.EDDSAPub, vCmt.C)
+		round.input.EDDSAPub, vCmt.C, ssid,
+		sessionNonceHash(round.temp.ssidNonce))
 	round.temp.dgRound1Messages[i] = r1msg
 	round.out <- r1msg
 

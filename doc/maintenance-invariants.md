@@ -71,13 +71,18 @@ catch it**. Five `ok`-tracker pre-sets in the re-sharing rounds are gated on the
 predicate for the SENDER role in that round, not on the negation of the
 predicate for the RECEIVER role:
 
+Sites are named by declaration, not by line: every one of them sits inside a
+`Start()` that this tree has already grown twice, and absolute line numbers went
+stale both times without anything noticing. The `pre-set` column identifies which
+call inside the declaration is meant.
+
 | site | pre-set | gated on | correct gate |
 | --- | --- | --- | --- |
-| `ecdsa/resharing/round_1_old_step_1.go:67` | `allOldOK()` | `IsOldCommittee()` | `!IsNewCommittee()` |
-| `ecdsa/resharing/round_3_old_step_2.go:27` | `allOldOK()` | `IsOldCommittee()` | `!IsNewCommittee()` |
-| `eddsa/resharing/round_1_old_step_1.go:66` | `allOldOK()` | `IsOldCommittee()` | `!IsNewCommittee()` |
-| `eddsa/resharing/round_2_new_step_1.go:27` | `allNewOK()` | `IsNewCommittee()` | `!IsOldCommittee()` |
-| `eddsa/resharing/round_3_old_step_2.go:27` | `allOldOK()` | `IsOldCommittee()` | `!IsNewCommittee()` |
+| `ecdsa/resharing/round_1_old_step_1.go#Start` | `allOldOK()` | `IsOldCommittee()` | `!IsNewCommittee()` |
+| `ecdsa/resharing/round_3_old_step_2.go#Start` | `allOldOK()` | `IsOldCommittee()` | `!IsNewCommittee()` |
+| `eddsa/resharing/round_1_old_step_1.go#Start` | `allOldOK()` | `IsOldCommittee()` | `!IsNewCommittee()` |
+| `eddsa/resharing/round_2_new_step_1.go#Start` | `allNewOK()` | `IsNewCommittee()` | `!IsOldCommittee()` |
+| `eddsa/resharing/round_3_old_step_2.go#Start` | `allOldOK()` | `IsOldCommittee()` | `!IsNewCommittee()` |
 
 For a party in exactly one committee the two gates coincide, which is why the
 code has always looked correct. For a party in both, each of those five lines
