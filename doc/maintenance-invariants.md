@@ -34,6 +34,38 @@ of the same nature on both paths — on the `BobMidWC` side it is long-lived —
 an argument that holds for one call site does not automatically hold for the
 other.
 
+## 2b. `crypto/mta` — the prover-side ring checks decide who gets blamed
+
+`ProveRangeAlice` and `ProveBobWC` each check the `(NTilde, h1, h2)` they are
+given, before proving, and check the values they computed in it, before
+returning. Both look like redundant validation of something the verifier is
+about to validate anyway, and deleting them leaves every test in this tree green
+except the two that exist for them.
+
+They are not redundant, because of who owns what. Every proof here is built
+under the **counterparty's** ring and verified by that **same** counterparty:
+Alice's range proof uses `(NTildeB, h1B, h2B)` and Bob checks it; Bob's proof
+uses `(NTildeA, h1A, h2A)` and Alice checks it. The party that supplies the
+parameters is therefore also the party that judges the result. Remove the
+prover-side checks and a ring whose generators have small order — which keygen
+does not exclude, since it establishes nothing about the order of a peer's `h1`
+and `h2`, only `<h1> == <h2>` via the bidirectional DLN pair — makes an entirely
+correct proof fail its counterparty's `Verify`. The abort that follows names the
+party that computed the proof.
+
+`ecdsa/signing/round_2.go` names `Pj` on `mta.ErrRangeProofVerify`, and that is
+the right answer **only** while a conforming peer cannot reach that line
+honestly. The prover-side checks are what makes it true. Delete them and the
+attribution silently inverts: the honest party is reported, and the party whose
+parameters caused it is the one reporting.
+
+`ringSideValuesUsable` is confined to values computed in the counterparty's ring
+on purpose. Every other condition a verifier applies is a function of the local
+party's own Paillier key or its own randomness, and a rejection caused by one of
+those genuinely is the local party's fault. Widening the predicate past the ring
+would move the error in the opposite direction — naming an innocent counterparty
+— which is the same defect mirrored.
+
 ## 3. `crypto/modproof` — `K = 80` is a security parameter
 
 Eighty iterations of modular exponentiation is the dominant cost of

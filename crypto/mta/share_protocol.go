@@ -81,7 +81,32 @@ func AliceInit(
 // ErrRangeProofVerify signals that BobMid / BobMidWC rejected the peer's
 // supplied RangeProofAlice. Callers should attribute this error to the
 // peer Pj (not the local party). Wrapped via fmt.Errorf for errors.Is.
+//
+// That attribution is only sound because ProveRangeAlice refuses to hand out a
+// proof whose ring-side values this verifier rejects: the ring being verified
+// against is the LOCAL party's, so without that refusal a peer could reach this
+// line by honestly proving into a ring the local party itself chose. See
+// ErrCounterpartyRingUnusable.
 var ErrRangeProofVerify = errors.New("RangeProofAlice.Verify() returned false")
+
+// ErrCounterpartyRingUnusable signals that the (NTilde, h1, h2) ring the
+// COUNTERPARTY supplied does not admit a proof that same counterparty would
+// accept: either the ring fails the shape conditions its own verifier applies,
+// or a value this party computed IN that ring is one that verifier rejects.
+// Callers should attribute it to the counterparty that supplied the ring, not to
+// the local party that built the proof.
+//
+// It exists because of an asymmetry that is easy to miss. Every proof in this
+// package is built under the COUNTERPARTY's ring and verified by that same
+// counterparty: Alice's range proof uses (NTildeB, h1B, h2B) and Bob checks it;
+// Bob's proof uses (NTildeA, h1A, h2A) and Alice checks it. So "your proof did
+// not verify" does not on its own say whose input decided the outcome -- the
+// party that supplies the ring is also the party that judges the result, and a
+// ring that makes a correctly computed proof unacceptable turns into a complaint
+// against the party that computed it. Detecting the ring-decided case HERE,
+// before anything is sent, is what keeps the honest prover from being named for
+// its counterparty's parameters. It is the mirror image of ErrRangeProofVerify.
+var ErrCounterpartyRingUnusable = errors.New("the counterparty's NTilde ring does not admit a verifiable proof")
 
 func BobMid(
 	Session []byte,

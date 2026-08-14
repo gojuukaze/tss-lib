@@ -40,6 +40,13 @@ func (round *round2) Start() *tss.Error {
 	// distinction is in diagnostic clarity, not blame routing — an honest
 	// local party should not be blamed for peer-supplied data.
 	attributeBobMidErr := func(err error, Pj *tss.PartyID) *tss.Error {
+		// Bob's own proof is built under Pj's ring (NTildej[j] / H1j[j] /
+		// H2j[j] are passed as NTildeA / h1A / h2A below), so when that ring is
+		// what makes a correctly computed proof unacceptable, Pj is the source
+		// even though this party is the one that could not produce it.
+		if errors.Is(err, mta.ErrCounterpartyRingUnusable) {
+			return round.WrapError(errorspkg.Wrap(err, "peer ring rejected this party's own ProofBob"), Pj)
+		}
 		if errors.Is(err, mta.ErrRangeProofVerify) {
 			return round.WrapError(errorspkg.Wrap(err, "peer RangeProofAlice rejected"), Pj)
 		}
