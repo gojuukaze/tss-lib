@@ -41,6 +41,11 @@ func ProveBobWC(Session []byte, ec elliptic.Curve, pk *paillier.PublicKey, NTild
 	if pk == nil || NTilde == nil || h1 == nil || h2 == nil || c1 == nil || c2 == nil || x == nil || y == nil || r == nil {
 		return nil, errors.New("ProveBob() received a nil argument")
 	}
+	// (NTilde, h1, h2) is the counterparty's here too -- Bob proves under Alice's
+	// ring and Alice verifies. See ErrCounterpartyRingUnusable.
+	if !counterpartyRingUsable(NTilde, h1, h2) {
+		return nil, ErrCounterpartyRingUnusable
+	}
 
 	NSquared := pk.NSquare()
 
@@ -150,6 +155,13 @@ func ProveBobWC(Session []byte, ec elliptic.Curve, pk *paillier.PublicKey, NTild
 	t2 := new(big.Int).Mul(e, sigma)
 	t2 = t2.Add(t2, tau)
 
+	// Do not hand out a proof whose ring-side values the counterparty's own
+	// verifier rejects: Z, ZPrm, T and W are the four values computed in the
+	// counterparty's ring. See ringSideValuesUsable for why only these four.
+	if !ringSideValuesUsable(NTilde, z, zPrm, t, w) {
+		return nil, ErrCounterpartyRingUnusable
+	}
+
 	// the regular Bob proof ("without check") is extracted and returned by ProveBob
 	pf := &ProofBob{Z: z, ZPrm: zPrm, T: t, V: v, W: w, S: s, S1: s1, S2: s2, T1: t1, T2: t2}
 
@@ -169,6 +181,14 @@ func ProveBob(Session []byte, ec elliptic.Curve, pk *paillier.PublicKey, NTilde,
 }
 
 func ProofBobWCFromBytes(ec elliptic.Curve, bzs [][]byte) (*ProofBobWC, error) {
+	// ProofBobFromBytes accepts EITHER arity on purpose -- a ProofBobWC's first
+	// ten parts are a well-formed ProofBob -- so delegating to it does not
+	// establish that parts 10 and 11 exist. Require the WC arity here, before
+	// reading them, or a ten-part input walks past the end of the slice.
+	if !common.NonEmptyMultiBytes(bzs, ProofBobWCBytesParts) {
+		return nil, fmt.Errorf(
+			"expected %d byte parts to construct ProofBobWC", ProofBobWCBytesParts)
+	}
 	proofBob, err := ProofBobFromBytes(bzs)
 	if err != nil {
 		return nil, err
@@ -434,7 +454,16 @@ func (pf *ProofBobWC) ValidateBasic() bool {
 	return pf != nil && pf.ProofBob != nil && pf.ProofBob.ValidateBasic() && pf.U != nil
 }
 
+// Bytes serialises the proof. It requires a well-formed receiver and says so by
+// panicking, because there is no honest alternative: the return type is a fixed
+// array of byte slices with no error channel, and substituting an empty slice
+// for a missing field would emit a proof that looks serialisable and is not.
+// ValidateBasic is the type's own definition of well-formed, so it is what the
+// guard tests -- a nil field would otherwise fault inside (*big.Int).Bytes().
 func (pf *ProofBob) Bytes() [ProofBobBytesParts][]byte {
+	if !pf.ValidateBasic() {
+		panic(fmt.Errorf("ProofBob.Bytes: receiver is nil or has a nil field; ValidateBasic must hold first"))
+	}
 	return [...][]byte{
 		pf.Z.Bytes(),
 		pf.ZPrm.Bytes(),
@@ -449,7 +478,15 @@ func (pf *ProofBob) Bytes() [ProofBobBytesParts][]byte {
 	}
 }
 
+// Bytes serialises the proof. Like ProofBob.Bytes it demands a well-formed
+// receiver. Delegating to ProofBob.Bytes does NOT cover this type's own two
+// extra obligations: pf.ProofBob must be non-nil to delegate at all, and pf.U
+// must be non-nil before X()/Y() read its coordinates. ProofBobWC.ValidateBasic
+// asserts exactly those two on top of the embedded proof's own check.
 func (pf *ProofBobWC) Bytes() [ProofBobWCBytesParts][]byte {
+	if !pf.ValidateBasic() {
+		panic(fmt.Errorf("ProofBobWC.Bytes: receiver is nil, has a nil embedded ProofBob, a nil U, or a nil field; ValidateBasic must hold first"))
+	}
 	var out [ProofBobWCBytesParts][]byte
 	bobBzs := pf.ProofBob.Bytes()
 	bobBzsSlice := bobBzs[:]

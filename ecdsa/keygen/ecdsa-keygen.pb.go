@@ -178,8 +178,19 @@ type KGRound2Message2 struct {
 	state        protoimpl.MessageState `protogen:"open.v1"`
 	DeCommitment [][]byte               `protobuf:"bytes,1,rep,name=de_commitment,json=deCommitment,proto3" json:"de_commitment,omitempty"`
 	ModProof     [][]byte               `protobuf:"bytes,2,rep,name=modProof,proto3" json:"modProof,omitempty"`
-	// Mod proof for NTilde — proves the prover's NTilde is a square-free
-	// Blum integer, blocking smooth-subgroup attacks.
+	// Mod proof for the sender's NTilde. SCOPE: the verifier is
+	// ProofMod.Verify(Session, N) (crypto/modproof/proof.go#Verify), whose only
+	// statement input is the modulus, so this proof attests properties of
+	// NTilde alone (Blum-integer shape). It does NOT attest that NTilde is a
+	// product of safe primes: safe-primality is a property of NTilde's two
+	// prime factors — for each factor f, that (f-1)/2 is prime — and those
+	// factors never enter Verify, which receives only their product. It says
+	// nothing about h1/h2 either. <h1> == <h2> is established by the
+	// two-directional DLN proof pair in KGRound1Message.dlnproof_1 /
+	// dlnproof_2 — dlnproof.Proof.Verify(Session, h1, h2, N)
+	// (crypto/dlnproof/proof.go#Verify) — verified at
+	// ecdsa/keygen/round_2.go#Start, by the VerifyDLNProof1 and
+	// VerifyDLNProof2 calls.
 	NTildeModProof [][]byte `protobuf:"bytes,3,rep,name=nTildeModProof,proto3" json:"nTildeModProof,omitempty"`
 	unknownFields  protoimpl.UnknownFields
 	sizeCache      protoimpl.SizeCache

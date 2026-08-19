@@ -21,6 +21,12 @@ import (
 
 var zero = big.NewInt(0)
 
+// nonPositiveNonceErrText is worded identically at every round-1 site that
+// reads Parameters.SessionNonce().
+const nonPositiveNonceErrText = "session nonce must be positive; call " +
+	"Parameters.SetSessionNonce with a positive value agreed by all parties " +
+	"before starting the round"
+
 // round 1 represents round 1 of the keygen part of the GG18 ECDSA TSS spec (Gennaro, Goldfeder; 2018)
 func newRound1(params *tss.Parameters, save *LocalPartySaveData, temp *localTempData, out chan<- tss.Message, end chan<- *LocalPartySaveData) tss.Round {
 	return &round1{
@@ -101,6 +107,14 @@ func (round *round1) Start() *tss.Error {
 	// a coordinator-assigned SessionNonce so each keygen run has a fresh
 	// SSID — preventing cross-session DLN/ModProof/FacProof replay.
 	if nonce := round.Params().SessionNonce(); nonce != nil {
+		// The SSID hash takes Bytes() of every input, which is the magnitude
+		// only: -n and +n hash to the same digest, and 0 hashes to the empty
+		// string for every session alike. A caller that means two runs to be
+		// separate would get one SSID for both. Reject at the entry point
+		// instead of changing the hash, which would move every existing SSID.
+		if nonce.Sign() <= 0 {
+			return round.WrapError(errors.New(nonPositiveNonceErrText))
+		}
 		round.temp.ssidNonce = new(big.Int).Set(nonce)
 	} else {
 		return round.WrapError(errors.New(

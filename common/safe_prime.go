@@ -13,6 +13,7 @@ import (
 	"io"
 	"math/big"
 	"sync"
+	"sync/atomic"
 )
 
 const (
@@ -136,17 +137,16 @@ func GetRandomSafePrimesConcurrent(ctx context.Context, bitLen, numPrimes int, c
 	primes := make([]*GermainSafePrime, 0, numPrimes)
 
 	waitGroup := &sync.WaitGroup{}
-	// 不能关闭channel，把waitGroup.Wait()去掉后，可能可能还有未结束的协程写数据
-	// defer close(primeCh)
-	// defer close(errCh)
-	// 不需要等待协程结束，有结果后立即返回。未结束的协程会被context取消
-	// defer waitGroup.Wait()
+
+	defer close(primeCh)
+	defer close(errCh)
+	defer waitGroup.Wait()
 
 	generatorCtx, cancelGeneratorCtx := context.WithCancel(ctx)
 	defer cancelGeneratorCtx()
 
 	for i := 0; i < concurrency; i++ {
-		// waitGroup.Add(1)
+		waitGroup.Add(1)
 		runGenPrimeRoutine(
 			generatorCtx, primeCh, errCh, waitGroup, rand, bitLen,
 		)
@@ -157,12 +157,7 @@ func GetRandomSafePrimesConcurrent(ctx context.Context, bitLen, numPrimes int, c
 		select {
 		case result := <-primeCh:
 			primes = append(primes, result)
-			// if atomic.AddInt32(&needed, -1) <= 0 {
-			// 	return primes[:numPrimes], nil
-			// }
-			// 这里不会有并发，不需要atomic
-			needed--
-			if needed <= 0 {
+			if atomic.AddInt32(&needed, -1) <= 0 {
 				return primes[:numPrimes], nil
 			}
 		case err := <-errCh:
@@ -229,113 +224,120 @@ func runGenPrimeRoutine(
 	bigMod := new(big.Int)
 
 	go func() {
-		// defer waitGroup.Done()
+		defer waitGroup.Done()
 
 		for {
-			if ctx.Err() != nil {
+			select {
+			case <-ctx.Done():
 				return
-			}
-
-			_, err := io.ReadFull(rand, bytes)
-			if err != nil {
-				errCh <- err
-				return
-			}
-
-			// Clear bits in the first byte to make sure the candidate has
-			// a size <= bits.
-			bytes[0] &= uint8(int(1<<b) - 1)
-			// Don't let the value be too small, i.e, set the most
-			// significant two bits.
-			// Setting the top two bits, rather than just the top bit,
-			// means that when two of these values are multiplied together,
-			// the result isn't ever one bit short.
-			if b >= 2 {
-				bytes[0] |= 3 << (b - 2)
-			} else {
-				// Here b==1, because b cannot be zero.
-				bytes[0] |= 1
-				if len(bytes) > 1 {
-					bytes[1] |= 0x80
-				}
-			}
-			// Make the value odd since an even number this large certainly
-			// isn't prime.
-			bytes[len(bytes)-1] |= 1
-
-			q.SetBytes(bytes)
-
-			// Calculate the value mod the product of smallPrimes. If it's
-			// a multiple of any of these primes we add two until it isn't.
-			// The probability of overflowing is minimal and can be ignored
-			// because we still perform Miller-Rabin tests on the result.
-			bigMod.Mod(q, smallPrimesProduct)
-			mod := bigMod.Uint64()
-
-		NextDelta:
-			for delta := uint64(0); delta < 1<<20; delta += 2 {
-				// 判断一下，防止其他协程已经完成后，当前协程还在运行，占用资源
-				if ctx.Err() != nil {
+			default:
+				_, err := io.ReadFull(rand, bytes)
+				if err != nil {
+					errCh <- err
 					return
 				}
-				m := mod + delta
-				for _, prime := range smallPrimes {
-					if m%uint64(prime) == 0 && (qBitLen > 6 || m != uint64(prime)) {
-						continue NextDelta
+
+				// Clear bits in the first byte to make sure the candidate has
+				// a size <= bits.
+				bytes[0] &= uint8(int(1<<b) - 1)
+				// Don't let the value be too small, i.e, set the most
+				// significant two bits.
+				// Setting the top two bits, rather than just the top bit,
+				// means that when two of these values are multiplied together,
+				// the result isn't ever one bit short.
+				if b >= 2 {
+					bytes[0] |= 3 << (b - 2)
+				} else {
+					// Here b==1, because b cannot be zero.
+					bytes[0] |= 1
+					if len(bytes) > 1 {
+						bytes[1] |= 0x80
 					}
 				}
+				// Make the value odd since an even number this large certainly
+				// isn't prime.
+				bytes[len(bytes)-1] |= 1
 
-				if delta > 0 {
-					bigMod.SetUint64(delta)
-					q.Add(q, bigMod)
-				}
-				if ctx.Err() != nil {
-					return
-				}
-				// If `q = 1 (mod 3)`, then `p` is a multiple of `3` so it's
-				// obviously no prime and such `q` should be rejected.
-				// This will happen in 50% of cases and we should detect
-				// and eliminate them early.
-				//
-				// Explanation:
-				// If q = 1 (mod 3) then there exists a q' such that:
-				// q = 3q' + 1
-				//
-				// Since p = 2q + 1:
-				// p = 2q + 1 = 2(3q' + 1) + 1 = 6q' + 2 + 1 = 6q' + 3 =
-				//   = 3(2q' + 1)
-				// So `p` is a multiple of `3`.
-				qMod3 := new(big.Int).Mod(q, three)
-				if qMod3.Cmp(one) == 0 {
-					continue NextDelta
+				q.SetBytes(bytes)
+
+				// Calculate the value mod the product of smallPrimes. If it's
+				// a multiple of any of these primes we add two until it isn't.
+				// The probability of overflowing is minimal and can be ignored
+				// because we still perform Miller-Rabin tests on the result.
+				bigMod.Mod(q, smallPrimesProduct)
+				mod := bigMod.Uint64()
+
+			NextDelta:
+				for delta := uint64(0); delta < 1<<20; delta += 2 {
+					m := mod + delta
+					for _, prime := range smallPrimes {
+						if m%uint64(prime) == 0 && (qBitLen > 6 || m != uint64(prime)) {
+							continue NextDelta
+						}
+					}
+
+					if delta > 0 {
+						bigMod.SetUint64(delta)
+						q.Add(q, bigMod)
+					}
+
+					// If `q = 1 (mod 3)`, then `p` is a multiple of `3` so it's
+					// obviously no prime and such `q` should be rejected.
+					// This will happen in 50% of cases and we should detect
+					// and eliminate them early.
+					//
+					// Explanation:
+					// If q = 1 (mod 3) then there exists a q' such that:
+					// q = 3q' + 1
+					//
+					// Since p = 2q + 1:
+					// p = 2q + 1 = 2(3q' + 1) + 1 = 6q' + 2 + 1 = 6q' + 3 =
+					//   = 3(2q' + 1)
+					// So `p` is a multiple of `3`.
+					qMod3 := new(big.Int).Mod(q, big.NewInt(3))
+					if qMod3.Cmp(big.NewInt(1)) == 0 {
+						continue NextDelta
+					}
+
+					// p = 2q+1
+					p.Mul(q, big.NewInt(2))
+					p.Add(p, big.NewInt(1))
+					if !isPrimeCandidate(p) {
+						continue NextDelta
+					}
+
+					break
 				}
 
-				// p = 2q+1
-				p.Mul(q, two)
-				p.Add(p, one)
-				if !isPrimeCandidate(p) {
-					continue NextDelta
-				}
+				// There is a tiny possibility that, by adding delta, we caused
+				// the number to be one bit too long. Thus we check BitLen
+				// here.
+				if q.ProbablyPrime(20) &&
+					isPocklingtonCriterionSatisfied(p) &&
+					q.BitLen() == qBitLen {
 
-				break
-			}
-			if ctx.Err() != nil {
-				return
-			}
-			// There is a tiny possibility that, by adding delta, we caused
-			// the number to be one bit too long. Thus we check BitLen
-			// here.
-			if q.ProbablyPrime(20) &&
-				isPocklingtonCriterionSatisfied(p) &&
-				q.BitLen() == qBitLen {
-
-				if sgp := (&GermainSafePrime{p: p, q: q}); sgp.Validate() {
-					primeCh <- &GermainSafePrime{p: p, q: q}
+					if sgp := (&GermainSafePrime{p: p, q: q}); sgp.Validate() {
+						// Hand the result over under the same cancellation the
+						// loop above selects on. GetRandomSafePrimesConcurrent
+						// takes its numPrimes results, cancels this context and
+						// then waits for this goroutine: a plain send parks here
+						// with no reader left, and the deferred
+						// waitGroup.Wait() never returns, so the caller hangs
+						// with no error and no deadline that can reach it.
+						// Dropping the value costs nothing — the context is done
+						// only once the consumer has what it asked for or has
+						// itself given up, which is the error this function
+						// already documents.
+						select {
+						case primeCh <- &GermainSafePrime{p: p, q: q}:
+						case <-ctx.Done():
+							return
+						}
+					}
+					p, q = new(big.Int), new(big.Int)
 				}
-				p, q = new(big.Int), new(big.Int)
 			}
 		}
-
 	}()
 }
 

@@ -56,13 +56,18 @@ type (
 		newXi     *big.Int
 		newKs     []*big.Int
 		newBigXjs []*crypto.ECPoint // Xj to save in round 5
+
+		ssid      []byte
+		ssidNonce *big.Int
 	}
 )
 
 // Exported, used in `tss` client
-// The `key` is read from and/or written to depending on whether this party is part of the old or the new committee.
-// You may optionally generate and set the LocalPreParams if you would like to use pre-generated safe primes and Paillier secret.
-// (This is similar to providing the `optionalPreParams` to `keygen.LocalParty`).
+// The `key` is READ FROM and never written to. An old-committee party works on
+// a deep copy of `key.LocalSecrets`, so nothing this library does reaches the
+// caller's own save data.
+// This library does not erase your pre-re-share secret -- and could not time it
+// if it did. See doc/maintenance-invariants.md section 7.
 func NewLocalParty(
 	params *tss.ReSharingParameters,
 	key keygen.LocalPartySaveData,

@@ -58,7 +58,7 @@ func TestStoreMessageRejectsCrossCommitteeReplacement(t *testing.T) {
 	mkMsg := func(commitment *big.Int) tss.ParsedMessage {
 		// DGRound1Message is an old-committee-sourced broadcast; `from` is the
 		// old peer whose old-index collides with this party's new-index.
-		return NewDGRound1Message(newPIDs, oldPeer, pub, commitment, ssid)
+		return NewDGRound1Message(newPIDs, oldPeer, pub, commitment, ssid, []byte("nonce-hash"))
 	}
 
 	// 1. First DGRound1Message from the old peer is accepted.

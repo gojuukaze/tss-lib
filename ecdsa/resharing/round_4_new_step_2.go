@@ -100,10 +100,23 @@ func (round *round4) Start() *tss.Error {
 				return
 			}
 			// Verify the ModProof for the peer's NTilde. Mirrors the
-			// keygen-side check in keygen/round_3.go. Closes the
-			// smooth-subgroup NTilde injection path for resharing — peer's
-			// saved NTilde / H1 / H2 (set below) is bound to a
-			// Blum-integer-product attestation. Also mandatory.
+			// keygen-side check in keygen/round_3.go. Also mandatory.
+			// SCOPE: the verifier is ProofMod.Verify(Session, N)
+			// (crypto/modproof/proof.go#Verify), whose only statement input is the
+			// modulus, so this attests properties of NTildej alone (Blum-integer
+			// shape). It does NOT attest that NTildej is a product of safe primes:
+			// safe-primality is a property of NTildej's two prime factors — for
+			// each factor f, that (f-1)/2 is prime — and those factors never enter
+			// Verify, which receives only their product. It therefore does not by
+			// itself exclude an NTildej whose multiplicative group has smooth
+			// order, and it constrains neither H1j nor H2j, which are not its
+			// inputs — so the NTildej / H1j / H2j saved below are not jointly bound
+			// by this proof. For the peer's ring, <h1> == <h2> is established by
+			// the two-directional DLN proof pair instead —
+			// dlnproof.Proof.Verify(Session, h1, h2, N)
+			// (crypto/dlnproof/proof.go#Verify) — verified at
+			// round_4_new_step_2.go#Start, by the VerifyDLNProof1 and
+			// VerifyDLNProof2 calls.
 			nTildeModProof, err := r2msg1.UnmarshalNTildeModProof()
 			if err != nil {
 				paiProofCulprits[j] = msg.GetFrom()
@@ -164,9 +177,21 @@ func (round *round4) Start() *tss.Error {
 		vCj, vDj := r1msg.UnmarshalVCommitment(), r3msg2.UnmarshalVDeCommitment()
 
 		// 6. unpack flat "v" commitment content
+		//
+		// The part count is checked BEFORE DeCommit, which hashes every part it
+		// is handed. Nothing upstream bounds how many arrive: ValidateBasic calls
+		// NonEmptyMultiBytes with no expected length and cannot supply one,
+		// because the length is a function of the new threshold and the message
+		// layer does not know it. The accept set is unchanged -- D[0] is the
+		// commitment randomness, so a payload of (t+1)*2 coordinates is exactly
+		// (t+1)*2+1 parts on the wire.
+		if len(vDj) != (round.NewThreshold()+1)*2+1 { // they're points so * 2, plus r
+			// TODO collect culprits and return a list of them as per convention
+			return round.WrapError(errors.New("de-commitment of v_j0..v_jt failed"), round.Parties().IDs()[j])
+		}
 		vCmtDeCmt := commitments.HashCommitDecommit{C: vCj, D: vDj}
 		ok, flatVs := vCmtDeCmt.DeCommit()
-		if !ok || len(flatVs) != (round.NewThreshold()+1)*2 { // they're points so * 2
+		if !ok {
 			// TODO collect culprits and return a list of them as per convention
 			return round.WrapError(errors.New("de-commitment of v_j0..v_jt failed"), round.Parties().IDs()[j])
 		}
@@ -249,16 +274,12 @@ func (round *round4) Start() *tss.Error {
 			continue
 		}
 		ContextJ := common.AppendBigIntToBytesSlice(round.temp.ssid, big.NewInt(int64(j)))
-		facProof := &facproof.ProofFac{
-			P: zero, Q: zero, A: zero, B: zero, T: zero, Sigma: zero,
-			Z1: zero, Z2: zero, W1: zero, W2: zero, V: zero,
-		}
-		if !round.Parameters.NoProofFac() {
-			facProof, err = facproof.NewProof(ContextJ, round.EC(), round.save.PaillierSK.N, round.save.NTildej[j],
-				round.save.H1j[j], round.save.H2j[j], round.save.PaillierSK.P, round.save.PaillierSK.Q, round.Rand())
-			if err != nil {
-				return round.WrapError(err, Pi)
-			}
+		// FacProof generation is unconditional — the NoProofFac compatibility
+		// switch was removed alongside NoProofMod (SRC-2026-926).
+		facProof, err := facproof.NewProof(ContextJ, round.EC(), round.save.PaillierSK.N, round.save.NTildej[j],
+			round.save.H1j[j], round.save.H2j[j], round.save.PaillierSK.P, round.save.PaillierSK.Q, round.Rand())
+		if err != nil {
+			return round.WrapError(err, Pi)
 		}
 		r4msg1 := NewDGRound4Message1(Pj, Pi, facProof)
 		round.out <- r4msg1

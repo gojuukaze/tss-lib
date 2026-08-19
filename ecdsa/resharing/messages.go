@@ -44,6 +44,7 @@ func NewDGRound1Message(
 	ecdsaPub *crypto.ECPoint,
 	vct cmt.HashCommitment,
 	ssid []byte,
+	sessionNonceHash []byte,
 ) tss.ParsedMessage {
 	meta := tss.MessageRouting{
 		From:             from,
@@ -56,16 +57,39 @@ func NewDGRound1Message(
 		EcdsaPubY:   ecdsaPub.Y().Bytes(),
 		VCommitment: vct.Bytes(),
 		Ssid:        ssid,
+		// See the proto comment: the new committee cannot recompute `Ssid`, so
+		// this is the only value in the message it can check against something
+		// of its own.
+		SessionNonceHash: sessionNonceHash,
 	}
 	msg := tss.NewMessageWrapper(meta, content)
 	return tss.NewMessage(meta, content, msg)
 }
 
+// sessionDigestMaxBytes bounds the two SHA512_256-derived fields below. Both are
+// produced as common.SHA512_256i(...).Bytes(), a 32-byte digest with leading
+// zeroes dropped, so 32 is the exact upper bound a conforming sender can reach
+// and not a guess. It matters because neither field had one: the ssid is
+// adopted into round.temp.ssid and then prefixes the Session of every
+// zero-knowledge proof in the run, so its declared length is a length this party
+// re-hashes on each of them.
+const sessionDigestMaxBytes = 32
+
 func (m *DGRound1Message) ValidateBasic() bool {
 	return m != nil &&
 		common.NonEmptyBytes(m.EcdsaPubX) &&
 		common.NonEmptyBytes(m.EcdsaPubY) &&
-		common.NonEmptyBytes(m.VCommitment)
+		common.NonEmptyBytes(m.VCommitment) &&
+		// Required, not optional: an absent hash is exactly what a transcript
+		// captured before this field existed would carry, and it must not be
+		// laundered into "nothing to compare".
+		common.NonEmptyBytes(m.SessionNonceHash) &&
+		len(m.SessionNonceHash) <= sessionDigestMaxBytes &&
+		// Upper bound only. Emptiness is deliberately NOT rejected here: round 2
+		// tests it itself so that an empty declaration is refused with an
+		// ssid-specific error naming the sender, instead of being dropped by the
+		// message layer with no attribution.
+		len(m.Ssid) <= sessionDigestMaxBytes
 }
 
 func (m *DGRound1Message) UnmarshalECDSAPub(ec elliptic.Curve) (*crypto.ECPoint, error) {
@@ -138,7 +162,20 @@ func (m *DGRound2Message1) ValidateBasic() bool {
 		!common.NonEmptyBytes(m.H2) ||
 		// expected len of dln proof = sizeof(int64) + len(alpha) + len(t)
 		!common.NonEmptyMultiBytes(m.GetDlnproof_1(), 2+(dlnproof.Iterations*2)) ||
-		!common.NonEmptyMultiBytes(m.GetDlnproof_2(), 2+(dlnproof.Iterations*2)) {
+		!common.NonEmptyMultiBytes(m.GetDlnproof_2(), 2+(dlnproof.Iterations*2)) ||
+		// nTildeModProof is declared "Not optional" in
+		// protob/ecdsa-resharing.proto and round_4_new_step_2.go already treats
+		// a missing/unparseable proof as a culprit that aborts the round
+		// (SRC-2026-926 removed the NoProofMod fallback). The message layer did
+		// not hold up its end: an all-empty field passed here and only failed
+		// three rounds later.
+		//
+		// This predicate is byte-for-byte the one modproof.NewProofFromBytes
+		// applies (NonEmptyMultiBytes with the same ProofModBytesParts arity),
+		// so it accepts exactly the proofs UnmarshalNTildeModProof can decode.
+		// It therefore moves the rejection earlier without changing which
+		// messages are rejected.
+		!common.NonEmptyMultiBytes(m.GetNTildeModProof(), modproof.ProofModBytesParts) {
 		return false
 	}
 	// Align with keygen's bitlen floor at the message-decode layer.
@@ -310,11 +347,17 @@ func NewDGRound4Message1(
 }
 
 func (m *DGRound4Message1) ValidateBasic() bool {
-	return m != nil
-	// use with NoProofFac()
-	// && common.NonEmptyMultiBytes(m.GetFacProof(), facproof.ProofFacBytesParts)
+	// FacProof is now always generated (the NoProofFac compatibility switch was
+	// removed), so a message without one is malformed and can be rejected here
+	// rather than failing later in round 5.
+	return m != nil &&
+		common.NonEmptyMultiBytes(m.GetFacProof(), facproof.ProofFacBytesParts)
 }
 
 func (m *DGRound4Message1) UnmarshalFacProof() (*facproof.ProofFac, error) {
 	return facproof.NewProofFromBytes(m.GetFacProof())
+}
+
+func (m *DGRound1Message) UnmarshalSessionNonceHash() []byte {
+	return m.GetSessionNonceHash()
 }

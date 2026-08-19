@@ -9,6 +9,7 @@ package resharing
 import (
 	"fmt"
 	"math/big"
+	"strings"
 
 	"github.com/bnb-chain/tss-lib/v4/common"
 	"github.com/bnb-chain/tss-lib/v4/crypto"
@@ -65,9 +66,33 @@ type (
 )
 
 // Exported, used in `tss` client
-// The `key` is read from and/or written to depending on whether this party is part of the old or the new committee.
+// The `key` is READ FROM and never written to. An old-committee party works on
+// a deep copy of `key.LocalSecrets`, so nothing this library does reaches the
+// caller's own save data. The copy is not total: LocalPreParams (PaillierSK,
+// NTildei, H1i, H2i, Alpha, Beta, P, Q) is still shared with the caller.
+// This library does not erase your pre-re-share secret -- and could not time it
+// if it did. See doc/maintenance-invariants.md section 7.
+//
 // You may optionally generate and set the LocalPreParams if you would like to use pre-generated safe primes and Paillier secret.
 // (This is similar to providing the `optionalPreParams` to `keygen.LocalParty`).
+//
+// PRE-PARAMS ARE REUSED, NOT ROTATED. If key.LocalPreParams validates in full it
+// is kept, and this party carries the same Paillier private key and the same
+// NTilde trapdoor, h1 and h2 into the new committee, byte for byte. Skipping
+// minutes of safe-prime generation is the whole point of passing them in, but it
+// is a trade-off and it is the caller's to make: re-sharing refreshes the VSS
+// shares and refreshes NOTHING in LocalPreParams. A host re-sharing in order to
+// recover from a suspected compromise of a party's Paillier key or NTilde
+// trapdoor must leave LocalPreParams unset for that party, so that round 2
+// generates a fresh set.
+//
+// An incomplete LocalPreParams -- Validate() true but ValidateWithProof() false,
+// which is what an older version of tss-lib produced before it stored P, Q,
+// Alpha and Beta -- cannot be used at all, because the round-2 DLN proofs need
+// exactly those fields. It is dropped here and round 2 generates a fresh set,
+// costing the caller the safe-prime generation they were trying to avoid. That
+// is logged, not fatal. Note the asymmetry, which is deliberate but easy to trip
+// over: keygen.NewLocalParty panics on the same bytes.
 func NewLocalParty(
 	params *tss.ReSharingParameters,
 	key keygen.LocalPartySaveData,
@@ -99,8 +124,43 @@ func NewLocalParty(
 	// save data init
 	if key.LocalPreParams.ValidateWithProof() {
 		p.save.LocalPreParams = key.LocalPreParams
+	} else if key.LocalPreParams.Validate() {
+		// Present but unusable. Dropping it without a word costs the caller a
+		// fresh safe-prime generation in round 2 and gives them nothing to
+		// explain it: this is the only place the discard is visible, because
+		// round 2 sees the zero value and cannot tell it apart from "the caller
+		// passed nothing".
+		common.Logger.Warningf(
+			"%s: the supplied LocalPreParams is incomplete (missing: %s) and is being discarded; "+
+				"round 2 will generate a fresh set, which is the cost that passing pre-params was meant to avoid. "+
+				"keygen.NewLocalParty panics on the same input",
+			params.PartyID(), strings.Join(missingPreParamFields(key.LocalPreParams), ", "))
 	}
 	return p
+}
+
+// missingPreParamFields names the fields ValidateWithProof requires that
+// Validate does not. It is meaningful only for a LocalPreParams that already
+// passed Validate, which is what guarantees PaillierSK is non-nil here.
+func missingPreParamFields(pre keygen.LocalPreParams) []string {
+	fields := []struct {
+		name string
+		set  bool
+	}{
+		{"PaillierSK.P", pre.PaillierSK.P != nil},
+		{"PaillierSK.Q", pre.PaillierSK.Q != nil},
+		{"Alpha", pre.Alpha != nil},
+		{"Beta", pre.Beta != nil},
+		{"P", pre.P != nil},
+		{"Q", pre.Q != nil},
+	}
+	missing := make([]string, 0, len(fields))
+	for _, f := range fields {
+		if !f.set {
+			missing = append(missing, f.name)
+		}
+	}
+	return missing
 }
 
 func (p *LocalParty) FirstRound() tss.Round {

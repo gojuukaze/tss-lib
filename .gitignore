@@ -16,9 +16,7 @@ vendor
 *.out
 
 # IDE
-.idea/*
-!.idea/copyright/
-!.idea/codeStyles/
+.idea/
 *.swp
 .vscode/*.json
 

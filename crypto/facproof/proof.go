@@ -42,13 +42,29 @@ type (
 	}
 )
 
-// NOTE: there is no explicit factor-size constant. The "no small factor"
-// guarantee is provided implicitly by the verifier's range check on Z1/Z2
-// against q³·√N0 (see Verify): combined with the third equality binding
-// N0p·N0q = N0 and a Fiat-Shamir challenge e ≈ 2²⁵⁶ (not grindable down to
-// admit a small factor), it forces both prime factors to be > ~2⁵¹². The
-// former `rangeParameter` constant (and an unused `one`) were dead code
+// SCOPE OF THIS PROOF — read before relying on it for small-factor exclusion.
+//
+// Verify establishes that the prover knows a two-part factorisation N0 = A·B
+// with both parts inside the range window (|A|,|B| < q³·√N0, enforced via
+// Z1/Z2). It does NOT establish that A and B are prime, and the three
+// equalities do not constrain the parts any further, so a composite part
+// satisfies the relation as readily as a prime one.
+//
+// "No small factor" is therefore not a property of this proof on its own. It is
+// provided by the surrounding checks, and those are the ones that must not be
+// weakened:
+//   - crypto/modproof (ProofMod) — rules out prime powers and any third factor.
+//     Its strength comes from the K=80 iterations; K is a security parameter,
+//     not a performance knob.
+//   - crypto/paillier (paillier.Proof) — trial division up to
+//     verifyPrimesUntil, which covers factors below that bound but not above it.
+//
+// The former `rangeParameter` constant (and an unused `one`) were dead code
 // (never referenced by Verify) and have been removed (SRC-2026-926 part B).
+//
+// Historical note: this comment previously stated that the range check "forces
+// both prime factors to be > ~2⁵¹²". That overstates it — the check constrains
+// the shape of the declared factorisation, not the primality of its parts.
 
 // NewProof implements prooffac
 func NewProof(Session []byte, ec elliptic.Curve, N0, NCap, s, t, N0p, N0q *big.Int, rand io.Reader) (*ProofFac, error) {

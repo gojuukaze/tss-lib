@@ -29,13 +29,19 @@ const (
 
 // The Round 1 data is broadcast to peers of the New Committee in this message.
 type DGRound1Message struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	EcdsaPubX     []byte                 `protobuf:"bytes,1,opt,name=ecdsa_pub_x,json=ecdsaPubX,proto3" json:"ecdsa_pub_x,omitempty"`
-	EcdsaPubY     []byte                 `protobuf:"bytes,2,opt,name=ecdsa_pub_y,json=ecdsaPubY,proto3" json:"ecdsa_pub_y,omitempty"`
-	VCommitment   []byte                 `protobuf:"bytes,3,opt,name=v_commitment,json=vCommitment,proto3" json:"v_commitment,omitempty"`
-	Ssid          []byte                 `protobuf:"bytes,4,opt,name=ssid,proto3" json:"ssid,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
+	state       protoimpl.MessageState `protogen:"open.v1"`
+	EcdsaPubX   []byte                 `protobuf:"bytes,1,opt,name=ecdsa_pub_x,json=ecdsaPubX,proto3" json:"ecdsa_pub_x,omitempty"`
+	EcdsaPubY   []byte                 `protobuf:"bytes,2,opt,name=ecdsa_pub_y,json=ecdsaPubY,proto3" json:"ecdsa_pub_y,omitempty"`
+	VCommitment []byte                 `protobuf:"bytes,3,opt,name=v_commitment,json=vCommitment,proto3" json:"v_commitment,omitempty"`
+	Ssid        []byte                 `protobuf:"bytes,4,opt,name=ssid,proto3" json:"ssid,omitempty"`
+	// Binds this message to the session the SENDER believes it is in.
+	// The new committee cannot recompute `ssid` -- its pre-image is the OLD
+	// committee's save data, which a new party does not hold -- so without this
+	// field the new committee has nothing of its own to compare against and
+	// adopts whatever the old committee declares.
+	SessionNonceHash []byte `protobuf:"bytes,5,opt,name=session_nonce_hash,json=sessionNonceHash,proto3" json:"session_nonce_hash,omitempty"`
+	unknownFields    protoimpl.UnknownFields
+	sizeCache        protoimpl.SizeCache
 }
 
 func (x *DGRound1Message) Reset() {
@@ -96,6 +102,13 @@ func (x *DGRound1Message) GetSsid() []byte {
 	return nil
 }
 
+func (x *DGRound1Message) GetSessionNonceHash() []byte {
+	if x != nil {
+		return x.SessionNonceHash
+	}
+	return nil
+}
+
 // The Round 2 data is broadcast to other peers of the New Committee in this message.
 type DGRound2Message1 struct {
 	state      protoimpl.MessageState `protogen:"open.v1"`
@@ -106,12 +119,25 @@ type DGRound2Message1 struct {
 	H2         []byte                 `protobuf:"bytes,5,opt,name=h2,proto3" json:"h2,omitempty"`
 	Dlnproof_1 [][]byte               `protobuf:"bytes,6,rep,name=dlnproof_1,json=dlnproof1,proto3" json:"dlnproof_1,omitempty"`
 	Dlnproof_2 [][]byte               `protobuf:"bytes,7,rep,name=dlnproof_2,json=dlnproof2,proto3" json:"dlnproof_2,omitempty"`
-	// ModProof attesting that n_tilde is a Blum integer (product of two
-	// safe primes). Added in v4 to close the smooth-subgroup NTilde
-	// injection path that DLN proofs alone cannot detect.
-	// Empty when generator party ran with NoProofMod() compat mode; the
-	// verifier treats an unparseable proof as a warn-only fallback under
-	// NoProofMod(), or as a hard reject otherwise.
+	// ModProof over n_tilde. SCOPE: the verifier is
+	// ProofMod.Verify(Session, N) (crypto/modproof/proof.go#Verify), whose only
+	// statement input is the modulus, so this proof attests properties of
+	// n_tilde alone (Blum-integer shape). It does NOT attest that n_tilde is
+	// a product of safe primes: safe-primality is a property of n_tilde's two
+	// prime factors — for each factor f, that (f-1)/2 is prime — and those
+	// factors never enter Verify, which receives only their product. It
+	// constrains neither h1 nor h2 either. <h1> == <h2> is established by the
+	// two-directional DLN proof pair in dlnproof_1 / dlnproof_2 above —
+	// dlnproof.Proof.Verify(Session, h1, h2, N) (crypto/dlnproof/proof.go#Verify)
+	// — verified at ecdsa/resharing/round_4_new_step_2.go#Start, by the
+	// VerifyDLNProof1 and VerifyDLNProof2 calls.
+	// Not optional: since v4 the NoProofMod() compatibility switch and its
+	// warn-only fallback no longer exist (deleted in c487b67). A missing,
+	// unparseable or failing proof makes the sender a culprit
+	// (ecdsa/resharing/round_4_new_step_2.go#Start, at the
+	// UnmarshalNTildeModProof / nTildeModProof.Verify branches) and aborts the
+	// round (ecdsa/resharing/round_4_new_step_2.go#Start, at the culprit loop
+	// returning WrapError).
 	NTildeModProof [][]byte `protobuf:"bytes,8,rep,name=nTildeModProof,proto3" json:"nTildeModProof,omitempty"`
 	unknownFields  protoimpl.UnknownFields
 	sizeCache      protoimpl.SizeCache
@@ -416,12 +442,13 @@ var File_protob_ecdsa_resharing_proto protoreflect.FileDescriptor
 
 const file_protob_ecdsa_resharing_proto_rawDesc = "" +
 	"\n" +
-	"\x1cprotob/ecdsa-resharing.proto\x12\x1ebinance.tsslib.ecdsa.resharing\"\x88\x01\n" +
+	"\x1cprotob/ecdsa-resharing.proto\x12\x1ebinance.tsslib.ecdsa.resharing\"\xb6\x01\n" +
 	"\x0fDGRound1Message\x12\x1e\n" +
 	"\vecdsa_pub_x\x18\x01 \x01(\fR\tecdsaPubX\x12\x1e\n" +
 	"\vecdsa_pub_y\x18\x02 \x01(\fR\tecdsaPubY\x12!\n" +
 	"\fv_commitment\x18\x03 \x01(\fR\vvCommitment\x12\x12\n" +
-	"\x04ssid\x18\x04 \x01(\fR\x04ssid\"\xec\x01\n" +
+	"\x04ssid\x18\x04 \x01(\fR\x04ssid\x12,\n" +
+	"\x12session_nonce_hash\x18\x05 \x01(\fR\x10sessionNonceHash\"\xec\x01\n" +
 	"\x10DGRound2Message1\x12\x1d\n" +
 	"\n" +
 	"paillier_n\x18\x01 \x01(\fR\tpaillierN\x12\x1a\n" +

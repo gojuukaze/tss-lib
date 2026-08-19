@@ -46,11 +46,26 @@ func NewECPointNoCurveCheck(curve elliptic.Curve, X, Y *big.Int) *ECPoint {
 	return &ECPoint{curve, [2]*big.Int{X, Y}}
 }
 
+// X and Y return a copy of the respective coordinate.
+//
+// They panic on a nil receiver or a nil coordinate rather than faulting inside
+// (*big.Int).Set. Returning nil instead would not help: every caller in this
+// tree immediately calls Cmp or Bytes on the result, so a nil return relocates
+// the same fault one frame later and further from its cause. A coordinate can
+// legitimately be nil here because NewECPointNoCurveCheck stores whatever it is
+// given -- the nil guards that exist are in the CALLERS (Add, ScalarMult,
+// Equals), and they guard the outer pointer only.
 func (p *ECPoint) X() *big.Int {
+	if p == nil || p.coords[0] == nil {
+		panic(errors.New("ECPoint.X: nil point or nil X coordinate"))
+	}
 	return new(big.Int).Set(p.coords[0])
 }
 
 func (p *ECPoint) Y() *big.Int {
+	if p == nil || p.coords[1] == nil {
+		panic(errors.New("ECPoint.Y: nil point or nil Y coordinate"))
+	}
 	return new(big.Int).Set(p.coords[1])
 }
 
@@ -110,7 +125,15 @@ func (p *ECPoint) ToECDSAPubKey() *ecdsa.PublicKey {
 	}
 }
 
+// IsOnCurve reports whether the point satisfies its curve equation. A nil point,
+// or one with no curve, is not on any curve -- it returns false rather than
+// faulting, because it has a bool to say it with. `curve` is a direct field of
+// interface type, so it is nil-able even when the point itself is not, and
+// isOnCurve dereferences it at c.Params().
 func (p *ECPoint) IsOnCurve() bool {
+	if p == nil || p.curve == nil {
+		return false
+	}
 	return isOnCurve(p.curve, p.coords[0], p.coords[1])
 }
 
@@ -118,8 +141,16 @@ func (p *ECPoint) Curve() elliptic.Curve {
 	return p.curve
 }
 
+// Equals reports whether the two points have equal coordinates. The nil guard
+// covers the OUTER pointers; the coordinates reached through them are nil-able
+// too, and X()/Y() now panic on those, so they are tested here as well. A
+// malformed point equals nothing, including another malformed point -- a
+// comparison has a bool to return and should not abort the caller.
 func (p *ECPoint) Equals(p2 *ECPoint) bool {
 	if p == nil || p2 == nil {
+		return false
+	}
+	if p.coords[0] == nil || p.coords[1] == nil || p2.coords[0] == nil || p2.coords[1] == nil {
 		return false
 	}
 	return p.X().Cmp(p2.X()) == 0 && p.Y().Cmp(p2.Y()) == 0
@@ -306,7 +337,13 @@ func UnFlattenECPoints(curve elliptic.Curve, in []*big.Int, noCurveCheck ...bool
 // ----- //
 // Gob helpers for if you choose to encode messages with Gob.
 
+// GobEncode has an error to return, so a nil receiver produces one instead of a
+// fault. (A nil coordinate does not need its own case: (*big.Int).GobEncode is
+// nil-receiver safe and yields an empty encoding.)
 func (p *ECPoint) GobEncode() ([]byte, error) {
+	if p == nil {
+		return nil, errors.New("ECPoint.GobEncode: nil point")
+	}
 	buf := &bytes.Buffer{}
 	x, err := p.coords[0].GobEncode()
 	if err != nil {
@@ -331,24 +368,50 @@ func (p *ECPoint) GobEncode() ([]byte, error) {
 	return buf.Bytes(), nil
 }
 
-func (p *ECPoint) GobDecode(buf []byte) error {
-	reader := bytes.NewReader(buf)
+// readLengthPrefixed reads a little-endian uint32 length and then that many
+// bytes, refusing to reserve the buffer before the length is known to be
+// satisfiable.
+//
+// The bound comes straight out of GobEncode above, which writes exactly
+// 4 + len(x) + 4 + len(y) bytes. Each declared length is therefore at most the
+// number of bytes still unread when its prefix is consumed, which is what
+// bytes.Reader.Len reports. (The concrete ceiling is much smaller -- a
+// coordinate is (*big.Int).GobEncode output, one version/sign byte plus
+// ceil(bitLen/8) magnitude bytes, over a field element of tss.EC(), so 33
+// bytes and a 74-byte encoding on secp256k1 -- but the remaining-bytes bound
+// is exact, needs no curve lookup, and rejects precisely the set the old
+// n != int(length) check already rejected.)
+//
+// That equivalence is the point: bytes.Reader.Read fills min(len(b), remaining)
+// in a single call, so any length above the remaining count already failed
+// n != int(length). This moves the identical rejection to BEFORE the
+// allocation. Previously a 4-byte input declaring 0xFFFFFFFF reserved 4 GiB
+// and only then compared the counts.
+func readLengthPrefixed(reader *bytes.Reader) ([]byte, error) {
 	var length uint32
 	if err := binary.Read(reader, binary.LittleEndian, &length); err != nil {
+		return nil, err
+	}
+	if int64(length) > int64(reader.Len()) {
+		return nil, fmt.Errorf("gob decode failed: declared length %d exceeds the %d bytes remaining", length, reader.Len())
+	}
+	bz := make([]byte, length)
+	n, err := reader.Read(bz)
+	if n != int(length) || err != nil {
+		return nil, fmt.Errorf("gob decode failed: %v", err)
+	}
+	return bz, nil
+}
+
+func (p *ECPoint) GobDecode(buf []byte) error {
+	reader := bytes.NewReader(buf)
+	x, err := readLengthPrefixed(reader)
+	if err != nil {
 		return err
 	}
-	x := make([]byte, length)
-	n, err := reader.Read(x)
-	if n != int(length) || err != nil {
-		return fmt.Errorf("gob decode failed: %v", err)
-	}
-	if err := binary.Read(reader, binary.LittleEndian, &length); err != nil {
+	y, err := readLengthPrefixed(reader)
+	if err != nil {
 		return err
-	}
-	y := make([]byte, length)
-	n, err = reader.Read(y)
-	if n != int(length) || err != nil {
-		return fmt.Errorf("gob decode failed: %v", err)
 	}
 
 	X := new(big.Int)

@@ -41,7 +41,19 @@ func (round *round9) Start() *tss.Error {
 		TX, TY = round.Params().EC().Add(TX, TY, TjX, TjY)
 	}
 	if UX.Cmp(TX) != 0 || UY.Cmp(TY) != 0 {
-		return round.WrapError(errors.New("U doesn't equal T"), round.PartyID())
+		// This check sums a contribution from every party, so it cannot pinpoint
+		// which peer supplied an inconsistent (U_j, T_j) -- but the culprit is
+		// never the reporting party, which merely detected the mismatch.
+		// Attributing it to round.PartyID() charged the detector and left a
+		// misbehaving peer unnamed across repeated attempts.
+		culprits := make([]*tss.PartyID, 0, len(round.Parties().IDs())-1)
+		for j, Pj := range round.Parties().IDs() {
+			if j == round.PartyID().Index {
+				continue
+			}
+			culprits = append(culprits, Pj)
+		}
+		return round.WrapError(errors.New("U doesn't equal T"), culprits...)
 	}
 
 	r9msg := NewSignRound9Message(round.PartyID(), round.temp.si)
