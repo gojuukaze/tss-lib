@@ -12,8 +12,6 @@ import (
 	"fmt"
 	"io"
 	"math/big"
-	"sync"
-	"sync/atomic"
 )
 
 const (
@@ -136,19 +134,25 @@ func GetRandomSafePrimesConcurrent(ctx context.Context, bitLen, numPrimes int, c
 	errCh := make(chan error, concurrency)
 	primes := make([]*GermainSafePrime, 0, numPrimes)
 
-	waitGroup := &sync.WaitGroup{}
+	// Return as soon as enough safe primes have been generated instead of
+	// waiting for every worker goroutine to finish. Any remaining workers will
+	// exit shortly after the generator context is cancelled.
 
-	defer close(primeCh)
-	defer close(errCh)
-	defer waitGroup.Wait()
+	//waitGroup := &sync.WaitGroup{}
+
+	// Without a wait group, unfinished workers may still send to these channels
+	// after this function returns, so the channels must not be closed. They will
+	// be garbage-collected once the workers exit.
+	//defer close(primeCh)
+	//defer close(errCh)
+	//defer waitGroup.Wait()
 
 	generatorCtx, cancelGeneratorCtx := context.WithCancel(ctx)
 	defer cancelGeneratorCtx()
 
 	for i := 0; i < concurrency; i++ {
-		waitGroup.Add(1)
 		runGenPrimeRoutine(
-			generatorCtx, primeCh, errCh, waitGroup, rand, bitLen,
+			generatorCtx, primeCh, errCh, rand, bitLen,
 		)
 	}
 
@@ -157,7 +161,13 @@ func GetRandomSafePrimesConcurrent(ctx context.Context, bitLen, numPrimes int, c
 		select {
 		case result := <-primeCh:
 			primes = append(primes, result)
-			if atomic.AddInt32(&needed, -1) <= 0 {
+			// needed is only accessed by this goroutine, so atomic operations are
+			// unnecessary.
+			//if atomic.AddInt32(&needed, -1) <= 0 {
+			//	return primes[:numPrimes], nil
+			//}
+			needed--
+			if needed <= 0 {
 				return primes[:numPrimes], nil
 			}
 		case err := <-errCh:
@@ -207,7 +217,6 @@ func runGenPrimeRoutine(
 	ctx context.Context,
 	primeCh chan<- *GermainSafePrime,
 	errCh chan<- error,
-	waitGroup *sync.WaitGroup,
 	rand io.Reader,
 	pBitLen int,
 ) {
@@ -224,7 +233,6 @@ func runGenPrimeRoutine(
 	bigMod := new(big.Int)
 
 	go func() {
-		defer waitGroup.Done()
 
 		for {
 			select {
@@ -269,6 +277,9 @@ func runGenPrimeRoutine(
 
 			NextDelta:
 				for delta := uint64(0); delta < 1<<20; delta += 2 {
+					if ctx.Err() != nil {
+						return
+					}
 					m := mod + delta
 					for _, prime := range smallPrimes {
 						if m%uint64(prime) == 0 && (qBitLen > 6 || m != uint64(prime)) {
@@ -279,6 +290,9 @@ func runGenPrimeRoutine(
 					if delta > 0 {
 						bigMod.SetUint64(delta)
 						q.Add(q, bigMod)
+					}
+					if ctx.Err() != nil {
+						return
 					}
 
 					// If `q = 1 (mod 3)`, then `p` is a multiple of `3` so it's
@@ -307,6 +321,9 @@ func runGenPrimeRoutine(
 					}
 
 					break
+				}
+				if ctx.Err() != nil {
+					return
 				}
 
 				// There is a tiny possibility that, by adding delta, we caused
