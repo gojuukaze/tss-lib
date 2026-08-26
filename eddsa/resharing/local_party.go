@@ -122,17 +122,49 @@ func (p *LocalParty) ValidateMessage(msg tss.ParsedMessage) (bool, *tss.Error) {
 	if ok, err := p.BaseParty.ValidateMessage(msg); !ok || err != nil {
 		return ok, err
 	}
-	// check that the message's "from index" will fit into the array
-	var maxFromIdx int
+	// Resolve which committee this message type is sourced from, then check the
+	// sender against THAT committee twice: the array bound, and identity-to-slot.
+	//
+	// The bound alone is not an admission check. The old and new committees have
+	// INDEPENDENT index spaces, so "old slot j" and "new slot j" are different
+	// parties; an index that merely fits the array says nothing about whether the
+	// sender belongs to the committee the message type implies. Without the second
+	// test an old-committee-only party can, using its own PartyID, occupy the
+	// new-committee slot at its own old index (SRC-2026-1721).
+	//
+	// The second test compares against roster[Index] rather than scanning the
+	// whole roster, because StoreMessage below files the message by that same
+	// Index. Mere membership ("the sender is somewhere on this roster") would
+	// still let a message be filed into a slot belonging to a different member.
+	// Comparison is by KEY: PartyID.Index is assigned per sorted roster and is not
+	// carried on the wire, so it is the receiver's own view, while Key is the
+	// sender's identity. StoreMessage's self-echo dedup uses KeyInt() for the same
+	// reason.
+	//
+	// Ordering is load-bearing. BaseParty.ValidateMessage above has already
+	// established From != nil and Index >= 0; the bound check below establishes
+	// Index <= len(roster)-1. Only then is roster[Index] safe to evaluate. An
+	// empty roster yields maxFromIdx == -1 and is rejected by the bound check.
+	//
+	// This mirrors the ecdsa/resharing fix verbatim; the only difference is that
+	// this package carries DGRound2Message / DGRound4Message where ecdsa splits
+	// each into a ...1 / ...2 pair.
+	var roster tss.SortedPartyIDs
 	switch msg.Content().(type) {
 	case *DGRound2Message, *DGRound4Message:
-		maxFromIdx = len(p.params.NewParties().IDs()) - 1
+		roster = p.params.NewParties().IDs()
 	default:
-		maxFromIdx = len(p.params.OldParties().IDs()) - 1
+		roster = p.params.OldParties().IDs()
 	}
+	maxFromIdx := len(roster) - 1
 	if maxFromIdx < msg.GetFrom().Index {
 		return false, p.WrapError(fmt.Errorf("received msg with a sender index too great (%d <= %d)",
 			maxFromIdx, msg.GetFrom().Index), msg.GetFrom())
+	}
+	if roster[msg.GetFrom().Index].KeyInt().Cmp(msg.GetFrom().KeyInt()) != 0 {
+		return false, p.WrapError(fmt.Errorf(
+			"received %T from a party that is not on the committee that message type comes from",
+			msg.Content()), msg.GetFrom())
 	}
 	return true, nil
 }
