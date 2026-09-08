@@ -36,7 +36,10 @@ func EnableConstantTimeOps() {
 	atomic.StoreInt32(&constantTimeEnabled, 1)
 }
 
-// DisableConstantTimeOps disables constant-time operations (default).
+// DisableConstantTimeOps disables constant-time operations. This is NOT the
+// default: constantTimeEnabled is initialised to 1 above, and has been since
+// the commit that flipped it. Call this only to trade side-channel resistance
+// for throughput, knowingly.
 func DisableConstantTimeOps() {
 	atomic.StoreInt32(&constantTimeEnabled, 0)
 }

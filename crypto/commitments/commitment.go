@@ -63,6 +63,18 @@ func (cmt *HashCommitDecommit) Verify() bool {
 	if C == nil || D == nil {
 		return false
 	}
+	// A decommitment carries the randomness in D[0] and at least one committed
+	// secret after it, so fewer than two parts can never be a well-formed one.
+	// Two concrete failures live below this line without the bound:
+	//   len(D) == 0 -- common.SHA512_256i returns nil for an empty argument list,
+	//     and the nil *big.Int is then dereferenced by hash.Cmp(C) below.
+	//   len(D) == 1 -- Verify passes for anyone who supplies a matching C, and
+	//     DeCommit's `cmt.D[1:]` hands the caller an empty decommitment.
+	// Every call site in this repository already requires at least three parts,
+	// so this bound rejects nothing that was previously accepted.
+	if len(D) < 2 {
+		return false
+	}
 	// common.SHA512_256i panics on nil *big.Int entries (unlike the
 	// _TAGGED variant). Reject malformed decommitments up-front.
 	for _, di := range D {

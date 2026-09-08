@@ -101,22 +101,41 @@ func TestRound3RejectsEmptyDecommitment(t *testing.T) {
 	}
 }
 
-// TestEmptyDecommitmentUnFlattenIsNonNil locks in the primitive facts the
-// SRC-2026-925 guard relies on: a single-element decommitment [r] verifies,
-// and unflattening it yields a zero-length but non-nil slice — so the old
-// `flatPolyGs == nil` guard alone does NOT reject it. This documents WHY the
-// explicit length check is required.
-func TestEmptyDecommitmentUnFlattenIsNonNil(t *testing.T) {
+// TestShortDecommitmentUnFlattenIsNonNil locks in the primitive facts the
+// SRC-2026-925 guard relies on.
+//
+// Two layers stand between a wrong-length decommitment and the panic that
+// SRC-2026-925 was about, and this test pins both:
+//
+//  1. The primitive itself now refuses fewer than two parts, so the degenerate
+//     [r] case -- a commitment carrying no secret at all -- never opens. That
+//     bound was added after this test was first written; before it, [r]
+//     verified and DeCommit handed back an empty slice.
+//  2. The bound does NOT make the round-3 length check redundant. Any
+//     decommitment with two or more parts still opens, and unflattening a
+//     short-but-legal one yields a zero-... non-nil slice of the wrong length.
+//     `flatPolyGs == nil` alone therefore still does not reject it, which is
+//     why round 3 checks the count explicitly.
+func TestShortDecommitmentUnFlattenIsNonNil(t *testing.T) {
 	r := common.MustGetRandomInt(rand.Reader, 256)
-	evil := cmts.NewHashCommitmentWithRandomness(r)
 
-	ok, flat := evil.DeCommit()
-	assert.True(t, ok, "commitment to [r] verifies")
+	// Layer 1: a commitment carrying no secret does not open at all.
+	degenerate := cmts.NewHashCommitmentWithRandomness(r)
+	ok, flat := degenerate.DeCommit()
+	assert.False(t, ok, "a decommitment of fewer than two parts must not open")
+	assert.Nil(t, flat, "and it must hand back nothing")
+
+	// Layer 2: a two-part decommitment DOES open, and its unflattened form is
+	// non-nil with the wrong length -- the case the round-3 count check exists
+	// for. (threshold+1)*2 coordinates are expected for any real VSS
+	// commitment; one coordinate is not that.
+	short := cmts.NewHashCommitmentWithRandomness(r, big.NewInt(7))
+	ok, flat = short.DeCommit()
+	assert.True(t, ok, "a two-part commitment verifies")
 	assert.NotNil(t, flat, "DeCommit returns a non-nil slice")
-	assert.Len(t, flat, 0, "but it is empty — the old nil-guard does not catch it")
+	assert.Len(t, flat, 1, "carrying exactly the one committed value")
 
-	// (threshold+1)*2 coordinates expected for any real VSS commitment; an
-	// empty slice fails that length check, which is what the fix enforces.
 	const expectedForThreshold1 = (1 + 1) * 2
-	assert.NotEqual(t, expectedForThreshold1, len(flat))
+	assert.NotEqual(t, expectedForThreshold1, len(flat),
+		"so only an explicit count check rejects it")
 }

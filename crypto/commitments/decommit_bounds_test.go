@@ -73,3 +73,54 @@ func TestDeCommitStillOpensAndRefuses(t *testing.T) {
 	ok, _ = tampered.DeCommit()
 	assert.False(t, ok, "a mismatched decommitment must not open")
 }
+
+// A decommitment carries the randomness in D[0] and at least one committed
+// secret after it, so fewer than two parts is never well-formed. Verify refuses
+// both short shapes, and DeCommit therefore never reaches its D[1:].
+//
+// Both were reachable before the bound, and they failed differently:
+//
+//	len(D) == 0 -- common.SHA512_256i returns nil for an empty argument list,
+//	  and Verify then dereferenced that nil in hash.Cmp(C). A caller needed no
+//	  knowledge of C to crash the process; any C would do. Hence NotPanics.
+//	len(D) == 1 -- Verify passed for anyone who supplied a matching C, and
+//	  DeCommit handed back an empty decommitment that a caller checking only
+//	  `flatPolyGs == nil` would accept.
+//
+// Every call site in this repository already requires at least three parts, so
+// the bound rejects nothing that was previously accepted -- that half is what
+// TestDeCommitStillOpensAndRefuses and the round-3 tests pin.
+func TestVerifyRefusesFewerThanTwoParts(t *testing.T) {
+	t.Run("zero parts, no panic", func(tt *testing.T) {
+		cmt := &HashCommitDecommit{C: big.NewInt(42), D: HashDeCommitment{}}
+		assert.NotPanics(tt, func() {
+			assert.False(tt, cmt.Verify(), "an empty decommitment must not verify")
+		}, "an empty decommitment must not panic the caller")
+
+		ok, values := cmt.DeCommit()
+		assert.False(tt, ok)
+		assert.Nil(tt, values)
+	})
+
+	t.Run("one part, even with a matching commitment", func(tt *testing.T) {
+		r := big.NewInt(12345)
+		// The commitment the primitive itself would produce for [r] alone.
+		matching := NewHashCommitmentWithRandomness(r)
+		assert.Len(tt, matching.D, 1, "the builder produces exactly [r] here")
+
+		assert.False(tt, matching.Verify(),
+			"a decommitment carrying no secret must not verify even against its own C")
+
+		ok, values := matching.DeCommit()
+		assert.False(tt, ok)
+		assert.Nil(tt, values, "and it must not hand back an empty payload as if it opened")
+	})
+
+	t.Run("two parts still open", func(tt *testing.T) {
+		cmt := NewHashCommitmentWithRandomness(big.NewInt(99), big.NewInt(7))
+		ok, values := cmt.DeCommit()
+		assert.True(tt, ok, "the bound must not reject the smallest well-formed shape")
+		assert.Len(tt, values, 1)
+		assert.Equal(tt, 0, values[0].Cmp(big.NewInt(7)))
+	})
+}
