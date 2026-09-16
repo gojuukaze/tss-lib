@@ -172,6 +172,26 @@ func (params *Parameters) SessionNonce() *big.Int {
 // that keeps one Parameters object around for the lifetime of a party has to
 // set a fresh nonce for every execution it runs, since the previous value
 // stays behind otherwise.
+//
+// SECURITY REQUIREMENTS. Freshness above is not merely housekeeping; together
+// with secrecy it is what the binding rests on, and both are the caller's
+// responsibility. This library does not enforce either.
+//
+//   - The nonce's PREIMAGE MUST BE SECRET. Only its SHA512_256 digest travels on
+//     the wire, which does not make the preimage public knowledge. Anyone holding
+//     the preimage can set the same nonce on an instance of their own.
+//   - The nonce MUST BE UNIQUE PER RESHARING INSTANCE, not merely per logical
+//     session. The binding's granularity is the nonce, so two instantiations that
+//     share one are indistinguishable to the protocol.
+//   - This library keeps NO cross-instance record of consumed nonces. Reusing one
+//     lets a passively captured old-committee transcript be adopted by a second,
+//     independent new-committee instance, which then derives share material for
+//     the same public key without any live old-committee party taking part. The
+//     round-2 binding check does not catch this: it compares the nonce, and the
+//     nonce matches.
+//
+// Callers that cannot guarantee both properties should treat the transcript
+// itself as key material and protect it accordingly.
 func (params *Parameters) SetSessionNonce(nonce *big.Int) {
 	params.sessionNonce = nonce
 }

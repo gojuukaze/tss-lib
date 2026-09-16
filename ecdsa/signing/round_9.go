@@ -9,6 +9,9 @@ package signing
 import (
 	"errors"
 
+	errors2 "github.com/pkg/errors"
+
+	"github.com/bnb-chain/tss-lib/v4/crypto"
 	"github.com/bnb-chain/tss-lib/v4/crypto/commitments"
 	"github.com/bnb-chain/tss-lib/v4/tss"
 )
@@ -37,8 +40,16 @@ func (round *round9) Start() *tss.Error {
 			return round.WrapError(errors.New("de-commitment for bigVj and bigAj failed"), Pj)
 		}
 		UjX, UjY, TjX, TjY := values[0], values[1], values[2], values[3]
-		UX, UY = round.Params().EC().Add(UX, UY, UjX, UjY)
-		TX, TY = round.Params().EC().Add(TX, TY, TjX, TjY)
+		Uj, err := crypto.NewECPoint(round.Params().EC(), UjX, UjY)
+		if err != nil {
+			return round.WrapError(errors2.Wrapf(err, "NewECPoint(Uj)"), Pj)
+		}
+		Tj, err := crypto.NewECPoint(round.Params().EC(), TjX, TjY)
+		if err != nil {
+			return round.WrapError(errors2.Wrapf(err, "NewECPoint(Tj)"), Pj)
+		}
+		UX, UY = round.Params().EC().Add(UX, UY, Uj.X(), Uj.Y())
+		TX, TY = round.Params().EC().Add(TX, TY, Tj.X(), Tj.Y())
 	}
 	if UX.Cmp(TX) != 0 || UY.Cmp(TY) != 0 {
 		// This check sums a contribution from every party, so it cannot pinpoint
