@@ -15,8 +15,8 @@ import (
 
 	"github.com/bnb-chain/tss-lib/v4/common"
 	"github.com/bnb-chain/tss-lib/v4/crypto"
+	"github.com/btcsuite/btcd/address/v2/base58"
 	"github.com/btcsuite/btcd/btcec/v2"
-	"github.com/btcsuite/btcd/btcutil/base58"
 	"golang.org/x/crypto/ripemd160"
 )
 

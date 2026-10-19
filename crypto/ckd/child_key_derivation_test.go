@@ -19,7 +19,7 @@ import (
 	"github.com/btcsuite/btcd/btcec/v2"
 	"github.com/decred/dcrd/dcrec/edwards/v2"
 
-	"github.com/btcsuite/btcd/chaincfg"
+	"github.com/btcsuite/btcd/chaincfg/v2"
 	"github.com/stretchr/testify/assert"
 )
 

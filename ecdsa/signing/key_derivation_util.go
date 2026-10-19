@@ -11,7 +11,7 @@ import (
 	"github.com/bnb-chain/tss-lib/v4/crypto/ckd"
 	"github.com/bnb-chain/tss-lib/v4/ecdsa/keygen"
 
-	"github.com/btcsuite/btcd/chaincfg"
+	"github.com/btcsuite/btcd/chaincfg/v2"
 )
 
 func UpdatePublicKeyAndAdjustBigXj(keyDerivationDelta *big.Int, keys []keygen.LocalPartySaveData, extendedChildPk *crypto.ECPoint, ec elliptic.Curve) error {
